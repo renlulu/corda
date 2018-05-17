@@ -56,6 +56,7 @@ interface NodeConfiguration : NodeSSLConfiguration {
     val tlsCertCrlDistPoint: URL?
     val tlsCertCrlIssuer: String?
 
+    val h2Settings: NodeH2Settings?
     fun validate(): List<String>
 
     companion object {
@@ -163,12 +164,21 @@ data class NodeConfigurationImpl(
         override val attachmentCacheBound: Long = NodeConfiguration.defaultAttachmentCacheBound,
         override val extraNetworkMapKeys: List<UUID> = emptyList(),
         // do not use or remove (breaks DemoBench together with rejection of unknown configuration keys during parsing)
-        private val h2port: Int = 0,
+        private val h2port: Int?,
+        override val h2Settings: NodeH2Settings? = defaultH2Settings(h2port),
         // do not use or remove (used by Capsule)
         private val jarDirs: List<String> = emptyList()
 ) : NodeConfiguration {
     companion object {
         private val logger = loggerFor<NodeConfigurationImpl>()
+        private fun defaultH2Settings(h2port: Int?): NodeH2Settings? {
+            return when {
+                h2port != null ->  {
+                    NodeH2Settings(address = NetworkHostAndPort("localhost", h2port))
+                }
+                else -> null
+            }
+        }
     }
 
     override val rpcOptions: NodeRpcOptions = initialiseRpcOptions(rpcAddress, rpcSettings, SslOptions(baseDirectory / "certificates", keyStorePassword, trustStorePassword, crlCheckSoftFail))
@@ -183,6 +193,7 @@ data class NodeConfigurationImpl(
             else -> settings
         }.asOptions(fallbackSslOptions)
     }
+
 
     private fun validateTlsCertCrlConfig(): List<String> {
         val errors = mutableListOf<String>()
@@ -243,8 +254,11 @@ data class NodeConfigurationImpl(
         require(security == null || rpcUsers.isEmpty()) {
             "Cannot specify both 'rpcUsers' and 'security' in configuration"
         }
+        require(h2port == null || h2Settings == null) { "Cannot specify both 'h2port' and 'h2Settings' in configuration" }
     }
 }
+
+
 
 data class NodeRpcSettings(
         val address: NetworkHostAndPort?,
@@ -267,6 +281,10 @@ data class NodeRpcSettings(
         }
     }
 }
+
+data class NodeH2Settings(
+        val address: NetworkHostAndPort?
+) {}
 
 enum class VerifierType {
     InMemory,
