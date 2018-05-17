@@ -86,16 +86,7 @@ class NetworkBootstrapper {
         }.toMap()
     }
 
-    fun bootstrap(directory: Path, cordappJars: List<Path>) {
-        directory.createDirectories()
-        println("Bootstrapping local network in $directory")
-        generateDirectoriesIfNeeded(directory, cordappJars)
-        val nodeDirs = directory.list { paths -> paths.filter { (it / "corda.jar").exists() }.toList() }
-        require(nodeDirs.isNotEmpty()) { "No nodes found" }
-        println("Nodes found in the following sub-directories: ${nodeDirs.map { it.fileName }}")
-        val configs = nodeDirs.map {
-            it to ConfigFactory.parseFile((it / "node.conf").toFile())
-        }.toMap()
+    fun generateServiceIdentitiesForNotaryClusters(configs: Map<Path, Config>) {
         notaryClusters(configs).forEach { (cluster, directories) ->
             when (cluster) {
                 is NotaryCluster.BFT ->
@@ -104,6 +95,18 @@ class NetworkBootstrapper {
                     DevIdentityGenerator.generateDistributedNotarySingularIdentity(directories, cluster.name)
             }
         }
+    }
+
+    fun bootstrap(directory: Path, cordappJars: List<Path>) {
+        directory.createDirectories()
+        println("Bootstrapping local network in $directory")
+        generateDirectoriesIfNeeded(directory, cordappJars)
+        val nodeDirs = directory.list { paths -> paths.filter { (it / "corda.jar").exists() }.toList() }
+        require(nodeDirs.isNotEmpty()) { "No nodes found" }
+        println("Nodes found in the following sub-directories: ${nodeDirs.map { it.fileName }}")
+
+        val configs = nodeDirs.associateBy({ it }, {ConfigFactory.parseFile((it / "node.conf").toFile()) })
+        generateServiceIdentitiesForNotaryClusters(configs)
         val processes = startNodeInfoGeneration(nodeDirs)
         initialiseSerialization()
         try {
