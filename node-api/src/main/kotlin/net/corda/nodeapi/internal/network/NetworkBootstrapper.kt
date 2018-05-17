@@ -104,8 +104,7 @@ class NetworkBootstrapper {
         val nodeDirs = directory.list { paths -> paths.filter { (it / "corda.jar").exists() }.toList() }
         require(nodeDirs.isNotEmpty()) { "No nodes found" }
         println("Nodes found in the following sub-directories: ${nodeDirs.map { it.fileName }}")
-
-        val configs = nodeDirs.associateBy({ it }, {ConfigFactory.parseFile((it / "node.conf").toFile()) })
+        val configs = nodeDirs.associateBy({ it }, { ConfigFactory.parseFile((it / "node.conf").toFile()) })
         generateServiceIdentitiesForNotaryClusters(configs)
         val processes = startNodeInfoGeneration(nodeDirs)
         initialiseSerialization()
