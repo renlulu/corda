@@ -1,7 +1,9 @@
 @file:JvmName("ByteArrays")
+@file:KeepForDJVM
 
 package net.corda.core.utilities
 
+import net.corda.core.KeepForDJVM
 import net.corda.core.serialization.CordaSerializable
 import java.io.ByteArrayInputStream
 import java.io.OutputStream
@@ -19,6 +21,7 @@ import javax.xml.bind.DatatypeConverter
  * @property size The number of bytes this sequence represents.
  */
 @CordaSerializable
+@KeepForDJVM
 sealed class ByteSequence(private val _bytes: ByteArray, val offset: Int, val size: Int) : Comparable<ByteSequence> {
     /**
      * The underlying bytes.  Some implementations may choose to make a copy of the underlying [ByteArray] for
@@ -30,9 +33,10 @@ sealed class ByteSequence(private val _bytes: ByteArray, val offset: Int, val si
     fun open() = ByteArrayInputStream(_bytes, offset, size)
 
     /**
-     * Create a sub-sequence, that may be backed by a new byte array.
+     * Create a sub-sequence of this sequence. A copy of the underlying array may be made, if a subclass overrides
+     * [bytes] to do so, as [OpaqueBytes] does.
      *
-     * @param offset The offset within this sequence to start the new sequence.  Note: not the offset within the backing array.
+     * @param offset The offset within this sequence to start the new sequence. Note: not the offset within the backing array.
      * @param size The size of the intended sub sequence.
      */
     @Suppress("MemberVisibilityCanBePrivate")
@@ -40,7 +44,7 @@ sealed class ByteSequence(private val _bytes: ByteArray, val offset: Int, val si
         require(offset >= 0)
         require(offset + size <= this.size)
         // Intentionally use bytes rather than _bytes, to mirror the copy-or-not behaviour of that property.
-        return if (offset == 0 && size == this.size) this else OpaqueBytesSubSequence(bytes, this.offset + offset, size)
+        return if (offset == 0 && size == this.size) this else of(bytes, this.offset + offset, size)
     }
 
     companion object {
@@ -142,6 +146,7 @@ sealed class ByteSequence(private val _bytes: ByteArray, val offset: Int, val si
  * In an ideal JVM this would be a value type and be completely overhead free. Project Valhalla is adding such
  * functionality to Java, but it won't arrive for a few years yet!
  */
+@KeepForDJVM
 open class OpaqueBytes(bytes: ByteArray) : ByteSequence(bytes, 0, bytes.size) {
     companion object {
         /**
@@ -187,6 +192,7 @@ fun String.parseAsHex(): ByteArray = DatatypeConverter.parseHexBinary(this)
 /**
  * Class is public for serialization purposes
  */
+@KeepForDJVM
 class OpaqueBytesSubSequence(override val bytes: ByteArray, offset: Int, size: Int) : ByteSequence(bytes, offset, size) {
     init {
         require(offset >= 0 && offset < bytes.size)

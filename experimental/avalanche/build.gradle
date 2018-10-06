@@ -1,42 +1,19 @@
-buildscript {
-    ext.kotlin_version = '1.2.40'
+apply plugin: 'kotlin'
+apply plugin: 'application'
+// We need to set mainClassName before applying the shadow plugin.
+mainClassName = "net.corda.avalanche.MainKt"
 
-    repositories {
-        mavenCentral()
-        jcenter()
-    }
+apply plugin: 'com.github.johnrengelman.shadow'
 
-    dependencies {
-        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
-        classpath 'com.github.jengelman.gradle.plugins:shadow:2.0.3'
-    }
-}
-
-plugins {
-    id "org.jetbrains.kotlin.jvm"
-    id 'com.github.johnrengelman.shadow' version '2.0.3'
-    id 'java'
-    id 'application'
-}
-repositories {
-    mavenCentral()
-}
 dependencies {
     compile "org.jetbrains.kotlin:kotlin-stdlib-jdk8:$kotlin_version"
-    compile group: 'info.picocli', name: 'picocli', version: '3.0.1'
-    testCompile group: 'junit', name: 'junit', version: '4.12'
+    compile "info.picocli:picocli:$picocli_version"
+    testCompile "junit:junit:$junit_version"
 }
-compileKotlin {
-    kotlinOptions {
-        jvmTarget = "1.8"
-    }
-}
-compileTestKotlin {
-    kotlinOptions {
-        jvmTarget = "1.8"
-    }
-}
-mainClassName = "net.corda.avalanche.MainKt"
+
+jar.enabled = false
+
 shadowJar {
     baseName = "avalanche"
 }
+assemble.dependsOn shadowJar

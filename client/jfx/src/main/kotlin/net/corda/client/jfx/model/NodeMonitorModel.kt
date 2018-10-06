@@ -21,7 +21,6 @@ import net.corda.core.transactions.SignedTransaction
 import net.corda.core.utilities.NetworkHostAndPort
 import net.corda.core.utilities.contextLogger
 import net.corda.core.utilities.seconds
-import org.apache.activemq.artemis.api.core.ActiveMQException
 import rx.Observable
 import rx.Subscription
 import rx.subjects.PublishSubject
@@ -41,7 +40,7 @@ data class ProgressTrackingEvent(val stateMachineId: StateMachineRunId, val mess
 /**
  * This model exposes raw event streams to and from the node.
  */
-class NodeMonitorModel {
+class NodeMonitorModel : AutoCloseable {
 
     private val retryableStateMachineUpdatesSubject = PublishSubject.create<StateMachineUpdate>()
     private val stateMachineUpdatesSubject = PublishSubject.create<StateMachineUpdate>()
@@ -50,6 +49,7 @@ class NodeMonitorModel {
     private val stateMachineTransactionMappingSubject = PublishSubject.create<StateMachineTransactionMapping>()
     private val progressTrackingSubject = PublishSubject.create<ProgressTrackingEvent>()
     private val networkMapSubject = PublishSubject.create<MapChange>()
+    private var rpcConnection: CordaRPCConnection? = null
 
     val stateMachineUpdates: Observable<StateMachineUpdate> = stateMachineUpdatesSubject
     val vaultUpdates: Observable<Vault.Update<ContractState>> = vaultUpdatesSubject
@@ -71,7 +71,7 @@ class NodeMonitorModel {
             // Only execute using "runLater()" if JavaFX been initialized.
             // It may not be initialized in the unit test.
             // Also if we are already in the JavaFX thread - perform direct invocation without postponing it.
-            if(initialized.value.get() && !Platform.isFxApplicationThread()) {
+            if (initialized.value.get() && !Platform.isFxApplicationThread()) {
                 Platform.runLater(op)
             } else {
                 op()
@@ -86,19 +86,30 @@ class NodeMonitorModel {
     class CordaRPCOpsWrapper(val cordaRPCOps: CordaRPCOps)
 
     /**
+     * Disconnects from the Corda node for a clean client shutdown.
+     */
+    override fun close() {
+        try {
+            rpcConnection?.notifyServerAndClose()
+        } catch (e: Exception) {
+            logger.error("Error closing RPC connection to node", e)
+        }
+    }
+
+    /**
      * Register for updates to/from a given vault.
      * TODO provide an unsubscribe mechanism
      */
     fun register(nodeHostAndPort: NetworkHostAndPort, username: String, password: String) {
-
         // `retryableStateMachineUpdatesSubject` will change it's upstream subscriber in case of RPC connection failure, this `Observable` should
         // never produce an error.
         // `stateMachineUpdatesSubject` will stay firmly subscribed to `retryableStateMachineUpdatesSubject`
         retryableStateMachineUpdatesSubject.subscribe(stateMachineUpdatesSubject)
 
+        @Suppress("DEPRECATION")
         // Proxy may change during re-connect, ensure that subject wiring accurately reacts to this activity.
         proxyObservable.addListener { _, _, wrapper ->
-            if(wrapper != null) {
+            if (wrapper != null) {
                 val proxy = wrapper.cordaRPCOps
                 // Vault snapshot (force single page load with MAX_PAGE_SIZE) + updates
                 val (statesSnapshot, vaultUpdates) = proxy.vaultTrackBy<ContractState>(QueryCriteria.VaultQueryCriteria(Vault.StateStatus.ALL),
@@ -124,7 +135,7 @@ class NodeMonitorModel {
             }
         }
 
-        val stateMachines = performRpcReconnect(nodeHostAndPort, username, password)
+        val stateMachines = performRpcReconnect(nodeHostAndPort, username, password, shouldRetry = false)
 
         // Extract the flow tracking stream
         // TODO is there a nicer way of doing this? Stream of streams in general results in code like this...
@@ -134,7 +145,8 @@ class NodeMonitorModel {
         }
         val futureProgressTrackerUpdates = stateMachineUpdatesSubject.map { stateMachineUpdate ->
             if (stateMachineUpdate is StateMachineUpdate.Added) {
-                ProgressTrackingEvent.createStreamFromStateMachineInfo(stateMachineUpdate.stateMachineInfo) ?: Observable.empty<ProgressTrackingEvent>()
+                ProgressTrackingEvent.createStreamFromStateMachineInfo(stateMachineUpdate.stateMachineInfo)
+                        ?: Observable.empty<ProgressTrackingEvent>()
             } else {
                 Observable.empty<ProgressTrackingEvent>()
             }
@@ -144,10 +156,11 @@ class NodeMonitorModel {
         futureProgressTrackerUpdates.startWith(currentProgressTrackerUpdates).flatMap { it }.retry().subscribe(progressTrackingSubject)
     }
 
-    private fun performRpcReconnect(nodeHostAndPort: NetworkHostAndPort, username: String, password: String): List<StateMachineInfo> {
-
-        val connection = establishConnectionWithRetry(nodeHostAndPort, username, password)
-        val proxy = connection.proxy
+    private fun performRpcReconnect(nodeHostAndPort: NetworkHostAndPort, username: String, password: String, shouldRetry: Boolean): List<StateMachineInfo> {
+        val proxy = establishConnectionWithRetry(nodeHostAndPort, username, password, shouldRetry).let { connection ->
+            rpcConnection = connection
+            connection.proxy
+        }
 
         val (stateMachineInfos, stateMachineUpdatesRaw) = proxy.stateMachinesFeed()
 
@@ -162,9 +175,9 @@ class NodeMonitorModel {
                     // It is good idea to close connection to properly mark the end of it. During re-connect we will create a new
                     // client and a new connection, so no going back to this one. Also the server might be down, so we are
                     // force closing the connection to avoid propagation of notification to the server side.
-                    connection.forceClose()
+                    rpcConnection?.forceClose()
                     // Perform re-connect.
-                    performRpcReconnect(nodeHostAndPort, username, password)
+                    performRpcReconnect(nodeHostAndPort, username, password, shouldRetry = true)
                 })
 
         retryableStateMachineUpdatesSubscription.set(subscription)
@@ -174,38 +187,34 @@ class NodeMonitorModel {
         return stateMachineInfos
     }
 
-    private fun establishConnectionWithRetry(nodeHostAndPort: NetworkHostAndPort, username: String, password: String): CordaRPCConnection {
-
+    private fun establishConnectionWithRetry(nodeHostAndPort: NetworkHostAndPort, username: String, password: String, shouldRetry: Boolean): CordaRPCConnection {
         val retryInterval = 5.seconds
 
+        val client = CordaRPCClient(
+            nodeHostAndPort,
+            CordaRPCClientConfiguration.DEFAULT.copy(
+                connectionMaxRetryInterval = retryInterval
+            )
+        )
         do {
             val connection = try {
                 logger.info("Connecting to: $nodeHostAndPort")
-                val client = CordaRPCClient(
-                        nodeHostAndPort,
-                        object : CordaRPCClientConfiguration {
-                            override val connectionMaxRetryInterval = retryInterval
-                        }
-                )
                 val _connection = client.start(username, password)
                 // Check connection is truly operational before returning it.
                 val nodeInfo = _connection.proxy.nodeInfo()
                 require(nodeInfo.legalIdentitiesAndCerts.isNotEmpty())
                 _connection
-            } catch(secEx: ActiveMQException) {
-                // Happens when:
-                // * incorrect credentials provided;
-                // * incorrect endpoint specified;
-                // - no point to retry connecting.
-                throw secEx
-            }
-            catch(th: Throwable) {
-                // Deliberately not logging full stack trace as it will be full of internal stacktraces.
-                logger.info("Exception upon establishing connection: " + th.message)
-                null
+            } catch (throwable: Throwable) {
+                if (shouldRetry) {
+                    // Deliberately not logging full stack trace as it will be full of internal stacktraces.
+                    logger.info("Exception upon establishing connection: {}", throwable.message)
+                    null
+                } else {
+                    throw throwable
+                }
             }
 
-            if(connection != null) {
+            if (connection != null) {
                 logger.info("Connection successfully established with: $nodeHostAndPort")
                 return connection
             }

@@ -1,7 +1,7 @@
 package net.corda.testing.node.internal
 
 import net.corda.client.mock.Generator
-import net.corda.client.rpc.internal.CordaRPCClientConfigurationImpl
+import net.corda.client.rpc.CordaRPCClientConfiguration
 import net.corda.client.rpc.internal.RPCClient
 import net.corda.client.rpc.internal.serialization.amqp.AMQPClientSerializationScheme
 import net.corda.core.concurrent.CordaFuture
@@ -17,18 +17,21 @@ import net.corda.core.internal.uncheckedCast
 import net.corda.core.messaging.RPCOps
 import net.corda.core.node.NetworkParameters
 import net.corda.core.utilities.NetworkHostAndPort
+import net.corda.core.utilities.seconds
 import net.corda.node.internal.security.RPCSecurityManagerImpl
 import net.corda.node.services.messaging.RPCServer
 import net.corda.node.services.messaging.RPCServerConfiguration
-import net.corda.nodeapi.ArtemisTcpTransport
 import net.corda.nodeapi.RPCApi
+import net.corda.nodeapi.internal.ArtemisTcpTransport
 import net.corda.serialization.internal.AMQP_RPC_CLIENT_CONTEXT
 import net.corda.testing.common.internal.testNetworkParameters
 import net.corda.testing.core.MAX_MESSAGE_SIZE
 import net.corda.testing.driver.JmxPolicy
 import net.corda.testing.driver.PortAllocation
+import net.corda.testing.driver.TestCorDapp
 import net.corda.testing.node.NotarySpec
 import net.corda.testing.node.User
+import net.corda.testing.node.internal.DriverDSLImpl.Companion.cordappsInCurrentAndAdditionalPackages
 import org.apache.activemq.artemis.api.core.SimpleString
 import org.apache.activemq.artemis.api.core.TransportConfiguration
 import org.apache.activemq.artemis.api.core.client.ActiveMQClient
@@ -51,13 +54,14 @@ import org.apache.activemq.artemis.spi.core.security.ActiveMQSecurityManager3
 import java.lang.reflect.Method
 import java.nio.file.Path
 import java.nio.file.Paths
+import java.time.Duration
 import java.util.*
 import net.corda.nodeapi.internal.config.User as InternalUser
 
 inline fun <reified I : RPCOps> RPCDriverDSL.startInVmRpcClient(
         username: String = rpcTestUser.username,
         password: String = rpcTestUser.password,
-        configuration: CordaRPCClientConfigurationImpl = CordaRPCClientConfigurationImpl.default
+        configuration: CordaRPCClientConfiguration = CordaRPCClientConfiguration.DEFAULT
 ) = startInVmRpcClient(I::class.java, username, password, configuration)
 
 inline fun <reified I : RPCOps> RPCDriverDSL.startRandomRpcClient(
@@ -70,14 +74,14 @@ inline fun <reified I : RPCOps> RPCDriverDSL.startRpcClient(
         rpcAddress: NetworkHostAndPort,
         username: String = rpcTestUser.username,
         password: String = rpcTestUser.password,
-        configuration: CordaRPCClientConfigurationImpl = CordaRPCClientConfigurationImpl.default
+        configuration: CordaRPCClientConfiguration = CordaRPCClientConfiguration.DEFAULT
 ) = startRpcClient(I::class.java, rpcAddress, username, password, configuration)
 
 inline fun <reified I : RPCOps> RPCDriverDSL.startRpcClient(
         haAddressPool: List<NetworkHostAndPort>,
         username: String = rpcTestUser.username,
         password: String = rpcTestUser.password,
-        configuration: CordaRPCClientConfigurationImpl = CordaRPCClientConfigurationImpl.default
+        configuration: CordaRPCClientConfiguration = CordaRPCClientConfiguration.DEFAULT
 ) = startRpcClient(I::class.java, haAddressPool, username, password, configuration)
 
 data class RpcBrokerHandle(
@@ -98,7 +102,6 @@ val fakeNodeLegalName = CordaX500Name(organisation = "Not:a:real:name", locality
 // Use a global pool so that we can run RPC tests in parallel
 private val globalPortAllocation = PortAllocation.Incremental(10000)
 private val globalDebugPortAllocation = PortAllocation.Incremental(5005)
-private val globalMonitorPortAllocation = PortAllocation.Incremental(7005)
 
 fun <A> rpcDriver(
         isDebug: Boolean = false,
@@ -109,12 +112,13 @@ fun <A> rpcDriver(
         useTestClock: Boolean = false,
         startNodesInProcess: Boolean = false,
         waitForNodesToFinish: Boolean = false,
-        extraCordappPackagesToScan: List<String> = emptyList(),
         notarySpecs: List<NotarySpec> = emptyList(),
         externalTrace: Trace? = null,
         jmxPolicy: JmxPolicy = JmxPolicy(),
         networkParameters: NetworkParameters = testNetworkParameters(),
         notaryCustomOverrides: Map<String, Any?> = emptyMap(),
+        inMemoryDB: Boolean = true,
+        cordappsForAllNodes: Set<TestCorDapp> = cordappsInCurrentAndAdditionalPackages(),
         dsl: RPCDriverDSL.() -> A
 ): A {
     return genericDriver(
@@ -128,12 +132,13 @@ fun <A> rpcDriver(
                             isDebug = isDebug,
                             startNodesInProcess = startNodesInProcess,
                             waitForAllNodesToFinish = waitForNodesToFinish,
-                            extraCordappPackagesToScan = extraCordappPackagesToScan,
                             notarySpecs = notarySpecs,
                             jmxPolicy = jmxPolicy,
                             compatibilityZone = null,
                             networkParameters = networkParameters,
-                            notaryCustomOverrides = notaryCustomOverrides
+                            notaryCustomOverrides = notaryCustomOverrides,
+                            inMemoryDB = inMemoryDB,
+                            cordappsForAllNodes = cordappsForAllNodes
                     ), externalTrace
             ),
             coerce = { it },
@@ -239,11 +244,12 @@ data class RPCDriverDSL(
             nodeLegalName: CordaX500Name = fakeNodeLegalName,
             maxFileSize: Int = MAX_MESSAGE_SIZE,
             maxBufferedBytesPerClient: Long = 10L * MAX_MESSAGE_SIZE,
-            configuration: RPCServerConfiguration = RPCServerConfiguration.default,
-            ops: I
+            configuration: RPCServerConfiguration = RPCServerConfiguration.DEFAULT,
+            ops: I,
+            queueDrainTimeout: Duration = 5.seconds
     ): CordaFuture<RpcServerHandle> {
         return startInVmRpcBroker(rpcUser, maxFileSize, maxBufferedBytesPerClient).map { broker ->
-            startRpcServerWithBrokerRunning(rpcUser, nodeLegalName, configuration, ops, broker)
+            startRpcServerWithBrokerRunning(rpcUser, nodeLegalName, configuration, ops, broker, queueDrainTimeout)
         }
     }
 
@@ -259,7 +265,7 @@ data class RPCDriverDSL(
             rpcOpsClass: Class<I>,
             username: String = rpcTestUser.username,
             password: String = rpcTestUser.password,
-            configuration: CordaRPCClientConfigurationImpl = CordaRPCClientConfigurationImpl.default
+            configuration: CordaRPCClientConfiguration = CordaRPCClientConfiguration.DEFAULT
     ): CordaFuture<I> {
         return driverDSL.executorService.fork {
             val client = RPCClient<I>(inVmClientTransportConfiguration, configuration)
@@ -307,7 +313,7 @@ data class RPCDriverDSL(
             nodeLegalName: CordaX500Name = fakeNodeLegalName,
             maxFileSize: Int = MAX_MESSAGE_SIZE,
             maxBufferedBytesPerClient: Long = 10L * MAX_MESSAGE_SIZE,
-            configuration: RPCServerConfiguration = RPCServerConfiguration.default,
+            configuration: RPCServerConfiguration = RPCServerConfiguration.DEFAULT,
             customPort: NetworkHostAndPort? = null,
             ops: I
     ): CordaFuture<RpcServerHandle> {
@@ -330,7 +336,7 @@ data class RPCDriverDSL(
             rpcAddress: NetworkHostAndPort,
             username: String = rpcTestUser.username,
             password: String = rpcTestUser.password,
-            configuration: CordaRPCClientConfigurationImpl = CordaRPCClientConfigurationImpl.default
+            configuration: CordaRPCClientConfiguration = CordaRPCClientConfiguration.DEFAULT
     ): CordaFuture<I> {
         return driverDSL.executorService.fork {
             val client = RPCClient<I>(ArtemisTcpTransport.rpcConnectorTcpTransport(rpcAddress, null), configuration)
@@ -356,7 +362,7 @@ data class RPCDriverDSL(
             haAddressPool: List<NetworkHostAndPort>,
             username: String = rpcTestUser.username,
             password: String = rpcTestUser.password,
-            configuration: CordaRPCClientConfigurationImpl = CordaRPCClientConfigurationImpl.default
+            configuration: CordaRPCClientConfiguration = CordaRPCClientConfiguration.DEFAULT
     ): CordaFuture<I> {
         return driverDSL.executorService.fork {
             val client = RPCClient<I>(haAddressPool, null, configuration)
@@ -436,7 +442,7 @@ data class RPCDriverDSL(
         }
     }
 
-    fun startInVmRpcBroker(
+    private fun startInVmRpcBroker(
             rpcUser: User = rpcTestUser,
             maxFileSize: Int = MAX_MESSAGE_SIZE,
             maxBufferedBytesPerClient: Long = 10L * MAX_MESSAGE_SIZE
@@ -462,9 +468,10 @@ data class RPCDriverDSL(
     fun <I : RPCOps> startRpcServerWithBrokerRunning(
             rpcUser: User = rpcTestUser,
             nodeLegalName: CordaX500Name = fakeNodeLegalName,
-            configuration: RPCServerConfiguration = RPCServerConfiguration.default,
+            configuration: RPCServerConfiguration = RPCServerConfiguration.DEFAULT,
             ops: I,
-            brokerHandle: RpcBrokerHandle
+            brokerHandle: RpcBrokerHandle,
+            queueDrainTimeout: Duration = 5.seconds
     ): RpcServerHandle {
         val locator = ActiveMQClient.createServerLocatorWithoutHA(brokerHandle.clientTransportConfiguration).apply {
             minLargeMessageSize = MAX_MESSAGE_SIZE
@@ -481,7 +488,7 @@ data class RPCDriverDSL(
                 configuration
         )
         driverDSL.shutdownManager.registerShutdown {
-            rpcServer.close()
+            rpcServer.close(queueDrainTimeout)
             locator.close()
         }
         rpcServer.start(brokerHandle.serverControl)
@@ -516,7 +523,7 @@ class RandomRpcUser {
                 Generator.sequence(method.parameters.map {
                     generatorStore[it.type] ?: throw Exception("No generator for ${it.type}")
                 }).map { arguments ->
-                    Call(method, { method.invoke(handle.proxy, *arguments.toTypedArray()) })
+                    Call(method) { method.invoke(handle.proxy, *arguments.toTypedArray()) }
                 }
             }
             val callGenerator = Generator.choice(callGenerators)

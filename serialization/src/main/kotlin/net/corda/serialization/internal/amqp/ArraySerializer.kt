@@ -1,5 +1,6 @@
 package net.corda.serialization.internal.amqp
 
+import net.corda.core.KeepForDJVM
 import net.corda.core.serialization.SerializationContext
 import net.corda.core.utilities.contextLogger
 import net.corda.core.utilities.debug
@@ -7,12 +8,12 @@ import net.corda.core.utilities.loggerFor
 import net.corda.core.utilities.trace
 import org.apache.qpid.proton.amqp.Symbol
 import org.apache.qpid.proton.codec.Data
-import java.io.NotSerializableException
 import java.lang.reflect.Type
 
 /**
  * Serialization / deserialization of arrays.
  */
+@KeepForDJVM
 open class ArraySerializer(override val type: Type, factory: SerializerFactory) : AMQPSerializer<Any> {
     companion object {
         fun make(type: Type, factory: SerializerFactory) : AMQPSerializer<Any> {
@@ -48,7 +49,7 @@ open class ArraySerializer(override val type: Type, factory: SerializerFactory) 
 
             "$typeName[]"
         } else {
-            val arrayType = if (type.asClass()!!.componentType.isPrimitive) "[p]" else "[]"
+            val arrayType = if (type.asClass().componentType.isPrimitive) "[p]" else "[]"
             "${type.componentType().typeName}$arrayType"
         }
     }
@@ -88,11 +89,11 @@ open class ArraySerializer(override val type: Type, factory: SerializerFactory) 
     ): Any {
         if (obj is List<*>) {
             return obj.map { input.readObjectOrNull(it, schemas, elementType, context) }.toArrayOfType(elementType)
-        } else throw NotSerializableException("Expected a List but found $obj")
+        } else throw AMQPNotSerializableException(type, "Expected a List but found $obj")
     }
 
     open fun <T> List<T>.toArrayOfType(type: Type): Any {
-        val elementType = type.asClass() ?: throw NotSerializableException("Unexpected array element type $type")
+        val elementType = type.asClass()
         val list = this
         return java.lang.reflect.Array.newInstance(elementType, this.size).apply {
             (0..lastIndex).forEach { java.lang.reflect.Array.set(this, it, list[it]) }
@@ -104,7 +105,7 @@ open class ArraySerializer(override val type: Type, factory: SerializerFactory) 
 // the array since Kotlin won't allow an implicit cast from Int (as they're stored as 16bit ints) to Char
 class CharArraySerializer(factory: SerializerFactory) : ArraySerializer(Array<Char>::class.java, factory) {
     override fun <T> List<T>.toArrayOfType(type: Type): Any {
-        val elementType = type.asClass() ?: throw NotSerializableException("Unexpected array element type $type")
+        val elementType = type.asClass()
         val list = this
         return java.lang.reflect.Array.newInstance(elementType, this.size).apply {
             (0..lastIndex).forEach { java.lang.reflect.Array.set(this, it, (list[it] as Int).toChar()) }
@@ -158,7 +159,7 @@ class PrimCharArraySerializer(factory: SerializerFactory) : PrimArraySerializer(
     }
 
     override fun <T> List<T>.toArrayOfType(type: Type): Any {
-        val elementType = type.asClass() ?: throw NotSerializableException("Unexpected array element type $type")
+        val elementType = type.asClass()
         val list = this
         return java.lang.reflect.Array.newInstance(elementType, this.size).apply {
             val array = this

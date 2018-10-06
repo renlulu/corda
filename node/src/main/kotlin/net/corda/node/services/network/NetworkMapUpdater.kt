@@ -1,6 +1,7 @@
 package net.corda.node.services.network
 
 import com.google.common.util.concurrent.MoreExecutors
+import net.corda.core.CordaRuntimeException
 import net.corda.core.crypto.SecureHash
 import net.corda.core.crypto.SignedData
 import net.corda.core.internal.copyTo
@@ -15,27 +16,21 @@ import net.corda.core.utilities.minutes
 import net.corda.node.services.api.NetworkMapCacheInternal
 import net.corda.node.utilities.NamedThreadFactory
 import net.corda.nodeapi.exceptions.OutdatedNetworkParameterHashException
-import net.corda.nodeapi.internal.network.NETWORK_PARAMS_FILE_NAME
-import net.corda.nodeapi.internal.network.NETWORK_PARAMS_UPDATE_FILE_NAME
-import net.corda.nodeapi.internal.network.NetworkMap
-import net.corda.nodeapi.internal.network.ParametersUpdate
-import net.corda.nodeapi.internal.network.SignedNetworkParameters
-import net.corda.nodeapi.internal.network.verifiedNetworkMapCert
+import net.corda.nodeapi.internal.network.*
 import rx.Subscription
 import rx.subjects.PublishSubject
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
+import java.security.cert.X509Certificate
 import java.time.Duration
 import java.util.*
-import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import kotlin.system.exitProcess
 
 class NetworkMapUpdater(private val networkMapCache: NetworkMapCacheInternal,
-                        private val fileWatcher: NodeInfoWatcher,
+                        private val nodeInfoWatcher: NodeInfoWatcher,
                         private val networkMapClient: NetworkMapClient?,
-                        private val currentParametersHash: SecureHash,
-                        private val ourNodeInfoHash: SecureHash?,
                         private val baseDirectory: Path,
                         private val extraNetworkMapKeys: List<UUID>
 ) : AutoCloseable {
@@ -44,14 +39,69 @@ class NetworkMapUpdater(private val networkMapCache: NetworkMapCacheInternal,
         private val defaultRetryInterval = 1.minutes
     }
 
-    private val parametersUpdatesTrack: PublishSubject<ParametersUpdateInfo> = PublishSubject.create<ParametersUpdateInfo>()
-    private val executor = Executors.newSingleThreadScheduledExecutor(NamedThreadFactory("Network Map Updater Thread", Executors.defaultThreadFactory()))
+    private val parametersUpdatesTrack = PublishSubject.create<ParametersUpdateInfo>()
+    private val networkMapPoller = ScheduledThreadPoolExecutor(1, NamedThreadFactory("Network Map Updater Thread")).apply {
+        executeExistingDelayedTasksAfterShutdownPolicy = false
+    }
     private var newNetworkParameters: Pair<ParametersUpdate, SignedNetworkParameters>? = null
     private var fileWatcherSubscription: Subscription? = null
+    private lateinit var trustRoot: X509Certificate
+    private lateinit var currentParametersHash: SecureHash
+    private lateinit var ourNodeInfoHash: SecureHash
 
     override fun close() {
         fileWatcherSubscription?.unsubscribe()
-        MoreExecutors.shutdownAndAwaitTermination(executor, 50, TimeUnit.SECONDS)
+        MoreExecutors.shutdownAndAwaitTermination(networkMapPoller, 50, TimeUnit.SECONDS)
+    }
+
+    fun start(trustRoot: X509Certificate, currentParametersHash: SecureHash, ourNodeInfoHash: SecureHash) {
+        require(fileWatcherSubscription == null) { "Should not call this method twice." }
+        this.trustRoot = trustRoot
+        this.currentParametersHash = currentParametersHash
+        this.ourNodeInfoHash = ourNodeInfoHash
+        watchForNodeInfoFiles()
+        if (networkMapClient != null) {
+            watchHttpNetworkMap()
+        }
+    }
+
+    private fun watchForNodeInfoFiles() {
+        nodeInfoWatcher
+                .nodeInfoUpdates()
+                .subscribe {
+                    for (update in it) {
+                        when (update) {
+                            is NodeInfoUpdate.Add -> networkMapCache.addNode(update.nodeInfo)
+                            is NodeInfoUpdate.Remove -> {
+                                if (update.hash != ourNodeInfoHash) {
+                                    val nodeInfo = networkMapCache.getNodeByHash(update.hash)
+                                    nodeInfo?.let(networkMapCache::removeNode)
+                                }
+                            }
+                        }
+                    }
+                    if (networkMapClient == null) {
+                        // Mark the network map cache as ready on a successful poll of the node infos dir if not using
+                        // the HTTP network map even if there aren't any node infos
+                        networkMapCache.nodeReady.set(null)
+                    }
+                }
+    }
+
+    private fun watchHttpNetworkMap() {
+        // The check may be expensive, so always run it in the background even the first time.
+        networkMapPoller.submit(object : Runnable {
+            override fun run() {
+                val nextScheduleDelay = try {
+                    updateNetworkMapCache()
+                } catch (t: Throwable) {
+                    logger.warn("Error encountered while updating network map, will retry in $defaultRetryInterval", t)
+                    defaultRetryInterval
+                }
+                // Schedule the next update.
+                networkMapPoller.schedule(this, nextScheduleDelay.toMillis(), TimeUnit.MILLISECONDS)
+            }
+        })
     }
 
     fun trackParametersUpdate(): DataFeed<ParametersUpdateInfo?, ParametersUpdateInfo> {
@@ -61,43 +111,14 @@ class NetworkMapUpdater(private val networkMapCache: NetworkMapCacheInternal,
         return DataFeed(currentUpdateInfo, parametersUpdatesTrack)
     }
 
-    fun subscribeToNetworkMap() {
-        require(fileWatcherSubscription == null) { "Should not call this method twice." }
-        // Subscribe to file based networkMap
-        fileWatcherSubscription = fileWatcher.nodeInfoUpdates().subscribe {
-            when (it) {
-                is NodeInfoUpdate.Add -> {
-                    networkMapCache.addNode(it.nodeInfo)
-                }
-                is NodeInfoUpdate.Remove -> {
-                    if (it.hash != ourNodeInfoHash) {
-                        val nodeInfo = networkMapCache.getNodeByHash(it.hash)
-                        nodeInfo?.let { networkMapCache.removeNode(it) }
-                    }
-                }
-            }
+    fun updateNetworkMapCache(): Duration {
+        if (networkMapClient == null) {
+            throw CordaRuntimeException("Network map cache can be updated only if network map/compatibility zone URL is specified")
         }
 
-        if (networkMapClient == null) return
-
-        // Subscribe to remote network map if configured.
-        executor.submit(object : Runnable {
-            override fun run() {
-                val nextScheduleDelay = try {
-                    updateNetworkMapCache(networkMapClient)
-                } catch (t: Throwable) {
-                    logger.warn("Error encountered while updating network map, will retry in $defaultRetryInterval", t)
-                    defaultRetryInterval
-                }
-                // Schedule the next update.
-                executor.schedule(this, nextScheduleDelay.toMillis(), TimeUnit.MILLISECONDS)
-            }
-        }) // The check may be expensive, so always run it in the background even the first time.
-    }
-
-    private fun updateNetworkMapCache(networkMapClient: NetworkMapClient): Duration {
         val (globalNetworkMap, cacheTimeout) = networkMapClient.getNetworkMap()
         globalNetworkMap.parametersUpdate?.let { handleUpdateNetworkParameters(networkMapClient, it) }
+
         val additionalHashes = extraNetworkMapKeys.flatMap {
             try {
                 networkMapClient.getNetworkMap(it).payload.nodeInfoHashes
@@ -107,6 +128,7 @@ class NetworkMapUpdater(private val networkMapCache: NetworkMapCacheInternal,
                 emptyList<SecureHash>()
             }
         }
+
         val allHashesFromNetworkMap = (globalNetworkMap.nodeInfoHashes + additionalHashes).toSet()
 
         if (currentParametersHash != globalNetworkMap.networkParameterHash) {
@@ -114,6 +136,12 @@ class NetworkMapUpdater(private val networkMapCache: NetworkMapCacheInternal,
         }
 
         val currentNodeHashes = networkMapCache.allNodeHashes
+
+        // Remove node info from network map.
+        (currentNodeHashes - allHashesFromNetworkMap - nodeInfoWatcher.processedNodeInfoHashes)
+                .mapNotNull { if (it != ourNodeInfoHash) networkMapCache.getNodeByHash(it) else null }
+                .forEach(networkMapCache::removeNode)
+
         (allHashesFromNetworkMap - currentNodeHashes).mapNotNull {
             // Download new node info from network map
             try {
@@ -128,13 +156,9 @@ class NetworkMapUpdater(private val networkMapCache: NetworkMapCacheInternal,
             networkMapCache.addNode(it)
         }
 
-        // Remove node info from network map.
-        (currentNodeHashes - allHashesFromNetworkMap - fileWatcher.processedNodeInfoHashes)
-                .mapNotNull {
-                    if (it != ourNodeInfoHash) {
-                        networkMapCache.getNodeByHash(it)
-                    } else null
-                }.forEach(networkMapCache::removeNode)
+        // Mark the network map cache as ready on a successful poll of the HTTP network map, even on the odd chance that
+        // it's empty
+        networkMapCache.nodeReady.set(null)
 
         return cacheTimeout
     }
@@ -163,7 +187,7 @@ The node will shutdown now.""")
             return
         }
         val newSignedNetParams = networkMapClient.getNetworkParameters(update.newParametersHash)
-        val newNetParams = newSignedNetParams.verifiedNetworkMapCert(networkMapClient.trustedRoot)
+        val newNetParams = newSignedNetParams.verifiedNetworkMapCert(trustRoot)
         logger.info("Downloaded new network parameters: $newNetParams from the update: $update")
         newNetworkParameters = Pair(update, newSignedNetParams)
         val updateInfo = ParametersUpdateInfo(
@@ -180,7 +204,7 @@ The node will shutdown now.""")
         // Add persisting of newest parameters from update.
         val (update, signedNewNetParams) = requireNotNull(newNetworkParameters) { "Couldn't find parameters update for the hash: $parametersHash" }
         // We should check that we sign the right data structure hash.
-        val newNetParams = signedNewNetParams.verifiedNetworkMapCert(networkMapClient.trustedRoot)
+        val newNetParams = signedNewNetParams.verifiedNetworkMapCert(trustRoot)
         val newParametersHash = signedNewNetParams.raw.hash
         if (parametersHash == newParametersHash) {
             // The latest parameters have priority.

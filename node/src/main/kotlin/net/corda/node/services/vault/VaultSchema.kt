@@ -5,13 +5,13 @@ import net.corda.core.contracts.MAX_ISSUER_REF_SIZE
 import net.corda.core.contracts.UniqueIdentifier
 import net.corda.core.identity.AbstractParty
 import net.corda.core.identity.Party
+import net.corda.core.node.services.MAX_CONSTRAINT_DATA_SIZE
 import net.corda.core.node.services.Vault
 import net.corda.core.schemas.MappedSchema
 import net.corda.core.schemas.PersistentState
 import net.corda.core.serialization.CordaSerializable
 import net.corda.core.utilities.OpaqueBytes
 import org.hibernate.annotations.Type
-import java.io.Serializable
 import java.time.Instant
 import java.util.*
 import javax.persistence.*
@@ -27,6 +27,9 @@ object VaultSchema
 @CordaSerializable
 object VaultSchemaV1 : MappedSchema(schemaFamily = VaultSchema.javaClass, version = 1,
         mappedTypes = listOf(VaultStates::class.java, VaultLinearStates::class.java, VaultFungibleStates::class.java, VaultTxnNote::class.java)) {
+
+    override val migrationResource = "vault-schema.changelog-master"
+
     @Entity
     @Table(name = "vault_states", indexes = [Index(name = "state_status_idx", columnList = "state_status"), Index(name = "lock_id_idx", columnList = "lock_id, state_status")])
     class VaultStates(
@@ -58,9 +61,22 @@ object VaultSchemaV1 : MappedSchema(schemaFamily = VaultSchema.javaClass, versio
             @Column(name = "lock_id", nullable = true)
             var lockId: String? = null,
 
+            /** Used to determine whether a state abides by the relevancy rules of the recording node */
+            @Column(name = "relevancy_status", nullable = false)
+            var relevancyStatus: Vault.RelevancyStatus,
+
             /** refers to the last time a lock was taken (reserved) or updated (released, re-reserved) */
             @Column(name = "lock_timestamp", nullable = true)
-            var lockUpdateTime: Instant? = null
+            var lockUpdateTime: Instant? = null,
+
+            /** refers to constraint type (none, hash, whitelisted, signature) associated with a contract state */
+            @Column(name = "constraint_type", nullable = false)
+            var constraintType: Vault.ConstraintInfo.Type,
+
+            /** associated constraint type data (if any) */
+            @Column(name = "constraint_data", length = MAX_CONSTRAINT_DATA_SIZE, nullable = true)
+            @Type(type = "corda-wrapper-binary")
+            var constraintData: ByteArray? = null
     ) : PersistentState()
 
     @Entity
@@ -74,7 +90,7 @@ object VaultSchemaV1 : MappedSchema(schemaFamily = VaultSchema.javaClass, versio
                     joinColumns = [(JoinColumn(name = "output_index", referencedColumnName = "output_index")), (JoinColumn(name = "transaction_id", referencedColumnName = "transaction_id"))],
                     foreignKey = ForeignKey(name = "FK__lin_stat_parts__lin_stat"))
             @Column(name = "participants")
-            var participants: MutableSet<AbstractParty>? = null,
+            var participants: MutableSet<AbstractParty?>? = null,
             // Reason for not using Set is described here:
             // https://stackoverflow.com/questions/44213074/kotlin-collection-has-neither-generic-type-or-onetomany-targetentity
 
@@ -111,7 +127,7 @@ object VaultSchemaV1 : MappedSchema(schemaFamily = VaultSchema.javaClass, versio
 
             /** X500Name of owner party **/
             @Column(name = "owner_name", nullable = true)
-            var owner: AbstractParty,
+            var owner: AbstractParty?,
 
             /** [FungibleAsset] attributes
              *
@@ -127,7 +143,7 @@ object VaultSchemaV1 : MappedSchema(schemaFamily = VaultSchema.javaClass, versio
 
             /** X500Name of issuer party **/
             @Column(name = "issuer_name", nullable = true)
-            var issuer: AbstractParty,
+            var issuer: AbstractParty?,
 
             @Column(name = "issuer_ref", length = MAX_ISSUER_REF_SIZE, nullable = false)
             @Type(type = "corda-wrapper-binary")
@@ -149,12 +165,12 @@ object VaultSchemaV1 : MappedSchema(schemaFamily = VaultSchema.javaClass, versio
             @Column(name = "seq_no", nullable = false)
             var seqNo: Int,
 
-            @Column(name = "transaction_id", length = 64, nullable = false)
-            var txId: String,
+            @Column(name = "transaction_id", length = 64, nullable = true)
+            var txId: String?,
 
-            @Column(name = "note", nullable = false)
-            var note: String
-    ) : Serializable {
+            @Column(name = "note", nullable = true)
+            var note: String?
+    ) {
         constructor(txId: String, note: String) : this(0, txId, note)
     }
 }

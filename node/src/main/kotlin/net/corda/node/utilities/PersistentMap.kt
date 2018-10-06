@@ -10,6 +10,7 @@ import java.util.*
  * Implements an unbound caching layer on top of a table accessed via Hibernate mapping.
  */
 class PersistentMap<K : Any, V, E, out EK>(
+        name: String,
         val toPersistentEntityKey: (K) -> EK,
         val fromPersistentEntity: (E) -> Pair<K, V>,
         val toPersistentEntity: (key: K, value: V) -> E,
@@ -21,14 +22,17 @@ class PersistentMap<K : Any, V, E, out EK>(
     }
 
     private val cache = NonInvalidatingUnboundCache(
+            name,
             loadFunction = { key -> Optional.ofNullable(loadValue(key)) },
             removalListener = ExplicitRemoval(toPersistentEntityKey, persistentEntityClass)
-    ).apply {
-        //preload to allow all() to take data only from the cache (cache is unbound)
+    )
+
+    /** Preload to allow [all] to take data only from the cache (cache is unbound) */
+    fun preload() {
         val session = currentDBSession()
         val criteriaQuery = session.criteriaBuilder.createQuery(persistentEntityClass)
         criteriaQuery.select(criteriaQuery.from(persistentEntityClass))
-        getAll(session.createQuery(criteriaQuery).resultList.map { e -> fromPersistentEntity(e as E).first }.asIterable())
+        cache.getAll(session.createQuery(criteriaQuery).resultList.map { e -> fromPersistentEntity(e as E).first }.asIterable())
     }
 
     class ExplicitRemoval<K, V, E, EK>(private val toPersistentEntityKey: (K) -> EK, private val persistentEntityClass: Class<E>) : RemovalListener<K, V> {

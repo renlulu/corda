@@ -70,7 +70,7 @@ the three node folders. Each node folder has the following structure:
 
         .
         |____corda.jar                     // The runnable node
-        |____corda-webserver.jar           // The node's webserver
+        |____corda-webserver.jar           // The node's webserver (The notary doesn't need a web server)
         |____node.conf                     // The node's configuration file
         |____cordapps
         |____java/kotlin-source-0.1.jar  // Our IOU CorDapp
@@ -85,7 +85,7 @@ Let's start the nodes by running the following commands from the root of the pro
     // On Mac
     build/nodes/runnodes
 
-This will start a terminal window for each node, and an additional terminal window for each node's webserver - eight
+This will start a terminal window for each node, and an additional terminal window for each node's webserver - five
 terminal windows in all. Give each node a moment to start - you'll know it's ready when its terminal windows displays
 the message, "Welcome to the Corda interactive shell.".
 
@@ -108,10 +108,6 @@ commands.
 We want to create an IOU of 99 with PartyB. We start the ``IOUFlow`` by typing:
 
 .. container:: codeset
-
-    .. code-block:: java
-
-        start IOUFlow arg0: 99, arg1: "O=PartyB,L=New York,C=US"
 
     .. code-block:: kotlin
 
@@ -183,8 +179,8 @@ Next steps
 ----------
 There are a number of improvements we could make to this CorDapp:
 
-* We chould add unit tests, using the contract-test and flow-test frameworks
-* We chould change ``IOUState.value`` from an integer to a proper amount of a given currency
+* We could add unit tests, using the contract-test and flow-test frameworks
+* We could change ``IOUState.value`` from an integer to a proper amount of a given currency
 * We could add an API, to make it easier to interact with the CorDapp
 
 But for now, the biggest priority is to add an ``IOUContract`` imposing constraints on the evolution of each

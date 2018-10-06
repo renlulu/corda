@@ -1,17 +1,17 @@
 package net.corda.demobench.model
 
+import com.typesafe.config.ConfigException
 import com.typesafe.config.ConfigFactory
-import com.typesafe.config.ConfigValueFactory
 import net.corda.core.identity.CordaX500Name
 import net.corda.core.utilities.NetworkHostAndPort
 import net.corda.node.services.config.parseAsNodeConfiguration
 import net.corda.nodeapi.internal.config.User
 import net.corda.webserver.WebServerConfig
-import org.assertj.core.api.Assertions.assertThat
 import org.junit.Test
 import java.nio.file.Path
 import java.nio.file.Paths
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -35,19 +35,42 @@ class NodeConfigTest {
         )
 
         val nodeConfig = config.nodeConf()
-                .withValue("baseDirectory", ConfigValueFactory.fromAnyRef(baseDir.toString()))
+                .withValue("baseDirectory", valueFor(baseDir.toString()))
                 .withFallback(ConfigFactory.parseResources("reference.conf"))
                 .withFallback(ConfigFactory.parseMap(mapOf("devMode" to true)))
                 .resolve()
         val fullConfig = nodeConfig.parseAsNodeConfiguration()
 
+        // No custom configuration is created by default.
+        assertFailsWith<ConfigException.Missing> { nodeConfig.getConfig("custom") }
+
         assertEquals(myLegalName, fullConfig.myLegalName)
         assertEquals(localPort(40002), fullConfig.rpcOptions.address)
         assertEquals(localPort(10001), fullConfig.p2pAddress)
         assertEquals(listOf(user("jenny")), fullConfig.rpcUsers)
-        assertThat(fullConfig.dataSourceProperties["dataSource.url"] as String).contains("AUTO_SERVER_PORT=30001")
         assertTrue(fullConfig.useTestClock)
         assertFalse(fullConfig.detectPublicIp)
+    }
+
+    @Test
+    fun `reading node configuration with currencies`() {
+        val config = createConfig(
+                legalName = myLegalName,
+                p2pPort = 10001,
+                rpcPort = 10002,
+                rpcAdminPort = 10003,
+                webPort = 10004,
+                h2port = 10005,
+                notary = NotaryService(validating = false),
+                issuableCurrencies = listOf("GBP")
+        )
+
+        val nodeConfig = config.nodeConf()
+                .withValue("baseDirectory", valueFor(baseDir.toString()))
+                .withFallback(ConfigFactory.parseResources("reference.conf"))
+                .resolve()
+        val custom = nodeConfig.getConfig("custom")
+        assertEquals(listOf("GBP"), custom.getAnyRefList("issuableCurrencies"))
     }
 
     @Test
@@ -64,10 +87,13 @@ class NodeConfigTest {
         )
 
         val nodeConfig = config.webServerConf()
-                .withValue("baseDirectory", ConfigValueFactory.fromAnyRef(baseDir.toString()))
+                .withValue("baseDirectory", valueFor(baseDir.toString()))
                 .withFallback(ConfigFactory.parseResources("web-reference.conf"))
                 .resolve()
         val webConfig = WebServerConfig(baseDir, nodeConfig)
+
+        // No custom configuration is created by default.
+        assertFailsWith<ConfigException.Missing> { nodeConfig.getConfig("custom") }
 
         assertEquals(localPort(20001), webConfig.webAddress)
         assertEquals(localPort(40002), webConfig.rpcAddress)
@@ -83,17 +109,21 @@ class NodeConfigTest {
             webPort: Int = -1,
             h2port: Int = -1,
             notary: NotaryService?,
-            users: List<User> = listOf(user("guest"))
+            users: List<User> = listOf(user("guest")),
+            issuableCurrencies: List<String> = emptyList()
     ): NodeConfig {
         return NodeConfig(
                 myLegalName = legalName,
                 p2pAddress = localPort(p2pPort),
-                rpcAddress = localPort(rpcPort),
-                rpcAdminAddress = localPort(rpcAdminPort),
+                rpcSettings = NodeRpcSettings(
+                        address = localPort(rpcPort),
+                        adminAddress = localPort(rpcAdminPort)
+                ),
                 webAddress = localPort(webPort),
                 h2port = h2port,
                 notary = notary,
-                rpcUsers = users
+                rpcUsers = users,
+                issuableCurrencies = issuableCurrencies
         )
     }
 

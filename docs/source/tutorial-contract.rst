@@ -77,7 +77,7 @@ A state is a class that stores data that is checked by the contract. A commercia
 
 .. container:: codeset
 
-    .. literalinclude:: ../../docs/source/example-code/src/main/kotlin/net/corda/docs/tutorial/contract/TutorialContract.kt
+    .. literalinclude:: ../../docs/source/example-code/src/main/kotlin/net/corda/docs/kotlin/tutorial/contract/TutorialContract.kt
         :language: kotlin
         :start-after: DOCSTART 1
         :end-before: DOCEND 1
@@ -129,7 +129,7 @@ Let's define a few commands now:
 
 .. container:: codeset
 
-    .. literalinclude:: ../../docs/source/example-code/src/main/kotlin/net/corda/docs/tutorial/contract/TutorialContract.kt
+    .. literalinclude:: ../../docs/source/example-code/src/main/kotlin/net/corda/docs/kotlin/tutorial/contract/TutorialContract.kt
         :language: kotlin
         :start-after: DOCSTART 2
         :end-before: DOCEND 2
@@ -160,7 +160,7 @@ run two contracts one time each: Cash and CommercialPaper.
 
 .. container:: codeset
 
-    .. literalinclude:: ../../docs/source/example-code/src/main/kotlin/net/corda/docs/tutorial/contract/TutorialContract.kt
+    .. literalinclude:: ../../docs/source/example-code/src/main/kotlin/net/corda/docs/kotlin/tutorial/contract/TutorialContract.kt
         :language: kotlin
         :start-after: DOCSTART 3
         :end-before: DOCEND 3
@@ -285,7 +285,7 @@ logic.
 
 .. container:: codeset
 
-    .. literalinclude:: ../../docs/source/example-code/src/main/kotlin/net/corda/docs/tutorial/contract/TutorialContract.kt
+    .. literalinclude:: ../../docs/source/example-code/src/main/kotlin/net/corda/docs/kotlin/tutorial/contract/TutorialContract.kt
         :language: kotlin
         :start-after: DOCSTART 4
         :end-before: DOCEND 4
@@ -303,7 +303,7 @@ The first line simply gets the time-window out of the transaction. Setting a tim
 may be missing here. We check for it being null later.
 
 .. warning:: In the Kotlin version as long as we write a comparison with the transaction time first the compiler will
-   verify we didn't forget to check if it's missing. Unfortunately due to the need for smooth Java interop, this
+   verify we didn't forget to check if it's missing. Unfortunately due to the need for smooth interoperability with Java, this
    check won't happen if we write e.g. ``someDate > time``, it has to be ``time < someDate``. So it's good practice to
    always write the transaction time-window first.
 
@@ -317,7 +317,7 @@ this group. We do not allow multiple units of CP to be split or merged even if t
 exception if the list size is not 1, otherwise it returns the single item in that list. In Java, this appears as a
 regular static method of the type familiar from many FooUtils type singleton classes and we have statically imported it
 here. In Kotlin, it appears as a method that can be called on any JDK list. The syntax is slightly different but
-behind the scenes, the code compiles to the same bytecodes.
+behind the scenes, the code compiles to the same bytecode.
 
 Next, we check that the transaction was signed by the public key that's marked as the current owner of the commercial
 paper. Because the platform has already verified all the digital signatures before the contract begins execution,
@@ -404,7 +404,7 @@ a method to wrap up the issuance process:
 
 .. container:: codeset
 
-    .. literalinclude:: ../../docs/source/example-code/src/main/kotlin/net/corda/docs/tutorial/contract/TutorialContract.kt
+    .. literalinclude:: ../../docs/source/example-code/src/main/kotlin/net/corda/docs/kotlin/tutorial/contract/TutorialContract.kt
         :language: kotlin
         :start-after: DOCSTART 5
         :end-before: DOCEND 5
@@ -430,7 +430,7 @@ defined inside the contract itself
 
 .. container:: codeset
 
-    .. literalinclude:: ../../docs/source/example-code/src/main/kotlin/net/corda/docs/tutorial/contract/TutorialContract.kt
+    .. literalinclude:: ../../docs/source/example-code/src/main/kotlin/net/corda/docs/kotlin/tutorial/contract/TutorialContract.kt
         :language: kotlin
         :start-after: DOCSTART 8
         :end-before: DOCEND 8
@@ -464,7 +464,7 @@ What about moving the paper, i.e. reassigning ownership to someone else?
 
 .. container:: codeset
 
-    .. literalinclude:: ../../docs/source/example-code/src/main/kotlin/net/corda/docs/tutorial/contract/TutorialContract.kt
+    .. literalinclude:: ../../docs/source/example-code/src/main/kotlin/net/corda/docs/kotlin/tutorial/contract/TutorialContract.kt
         :language: kotlin
         :start-after: DOCSTART 6
         :end-before: DOCEND 6
@@ -487,7 +487,7 @@ Finally, we can do redemption.
 
 .. container:: codeset
 
-    .. literalinclude:: ../../docs/source/example-code/src/main/kotlin/net/corda/docs/tutorial/contract/TutorialContract.kt
+    .. literalinclude:: ../../docs/source/example-code/src/main/kotlin/net/corda/docs/kotlin/tutorial/contract/TutorialContract.kt
         :language: kotlin
         :start-after: DOCSTART 7
         :end-before: DOCEND 7

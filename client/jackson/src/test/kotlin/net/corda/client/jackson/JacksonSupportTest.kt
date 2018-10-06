@@ -8,6 +8,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode
 import com.fasterxml.jackson.databind.node.TextNode
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory
 import com.fasterxml.jackson.module.kotlin.convertValue
+import com.nhaarman.mockito_kotlin.any
 import com.nhaarman.mockito_kotlin.doReturn
 import com.nhaarman.mockito_kotlin.whenever
 import net.corda.client.jackson.internal.childrenAs
@@ -18,9 +19,11 @@ import net.corda.core.crypto.*
 import net.corda.core.crypto.CompositeKey
 import net.corda.core.crypto.PartialMerkleTree.PartialTree
 import net.corda.core.identity.*
+import net.corda.core.internal.AbstractAttachment
 import net.corda.core.internal.DigitalSignatureWithCert
 import net.corda.core.node.NodeInfo
 import net.corda.core.node.ServiceHub
+import net.corda.core.node.services.AttachmentStorage
 import net.corda.core.serialization.CordaSerializable
 import net.corda.core.serialization.SerializedBytes
 import net.corda.core.serialization.serialize
@@ -80,10 +83,18 @@ class JacksonSupportTest(@Suppress("unused") private val name: String, factory: 
 
     @Before
     fun setup() {
+        val unsignedAttachment = object : AbstractAttachment({ byteArrayOf() }) {
+            override val id: SecureHash get() = throw UnsupportedOperationException()
+        }
+
+        val attachments = rigorousMock<AttachmentStorage>().also {
+            doReturn(unsignedAttachment).whenever(it).openAttachment(any())
+        }
         services = rigorousMock()
         cordappProvider = rigorousMock()
         doReturn(cordappProvider).whenever(services).cordappProvider
         doReturn(testNetworkParameters()).whenever(services).networkParameters
+        doReturn(attachments).whenever(services).attachments
     }
 
     @Test
@@ -95,10 +106,14 @@ class JacksonSupportTest(@Suppress("unused") private val name: String, factory: 
     @Test
     fun `Amount(Currency) deserialization`() {
         val old = mapOf(
-                "quantity" to 2500000000,
-                "token" to "USD"
+            "quantity" to 2500000000,
+            "token" to "USD"
         )
         assertThat(mapper.convertValue<Amount<Currency>>(old)).isEqualTo(Amount(2_500_000_000, USD))
+    }
+
+    @Test
+    fun `Amount(Currency) Text deserialization`() {
         assertThat(mapper.convertValue<Amount<Currency>>(TextNode("$25000000"))).isEqualTo(Amount(2_500_000_000, USD))
     }
 
@@ -182,7 +197,7 @@ class JacksonSupportTest(@Suppress("unused") private val name: String, factory: 
     fun DigitalSignatureWithCert() {
         val digitalSignature = DigitalSignatureWithCert(MINI_CORP.identity.certificate, secureRandomBytes(128))
         val json = mapper.valueToTree<ObjectNode>(digitalSignature)
-        val (by, bytes) = json.assertHasOnlyFields("by", "bytes")
+        val (by, bytes) = json.assertHasOnlyFields("by", "bytes", "parentCertsChain")
         assertThat(by.valueAs<X509Certificate>(mapper)).isEqualTo(MINI_CORP.identity.certificate)
         assertThat(bytes.binaryValue()).isEqualTo(digitalSignature.bytes)
         assertThat(mapper.convertValue<DigitalSignatureWithCert>(json)).isEqualTo(digitalSignature)
@@ -392,6 +407,11 @@ class JacksonSupportTest(@Suppress("unused") private val name: String, factory: 
     }
 
     @Test
+    fun Instant() {
+        testToStringSerialisation(Instant.now())
+    }
+
+    @Test
     fun `Date is treated as Instant`() {
         val date = Date()
         val json = mapper.valueToTree<TextNode>(date)
@@ -590,7 +610,8 @@ class JacksonSupportTest(@Suppress("unused") private val name: String, factory: 
         assertThat(json["serialNumber"].bigIntegerValue()).isEqualTo(cert.serialNumber)
         assertThat(json["issuer"].valueAs<X500Principal>(mapper)).isEqualTo(cert.issuerX500Principal)
         assertThat(json["subject"].valueAs<X500Principal>(mapper)).isEqualTo(cert.subjectX500Principal)
-        assertThat(json["publicKey"].valueAs<PublicKey>(mapper)).isEqualTo(cert.publicKey)
+        // cert.publicKey should be converted to a supported format (this is required because [Certificate] returns keys as SUN EC keys, not BC).
+        assertThat(json["publicKey"].valueAs<PublicKey>(mapper)).isEqualTo(Crypto.toSupportedPublicKey(cert.publicKey))
         assertThat(json["notAfter"].valueAs<Date>(mapper)).isEqualTo(cert.notAfter)
         assertThat(json["notBefore"].valueAs<Date>(mapper)).isEqualTo(cert.notBefore)
         assertThat(json["encoded"].binaryValue()).isEqualTo(cert.encoded)

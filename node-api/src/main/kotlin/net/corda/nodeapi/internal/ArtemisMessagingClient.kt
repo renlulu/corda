@@ -3,9 +3,8 @@ package net.corda.nodeapi.internal
 import net.corda.core.serialization.internal.nodeSerializationEnv
 import net.corda.core.utilities.NetworkHostAndPort
 import net.corda.core.utilities.loggerFor
-import net.corda.nodeapi.ArtemisTcpTransport
 import net.corda.nodeapi.internal.ArtemisMessagingComponent.Companion.NODE_P2P_USER
-import net.corda.nodeapi.internal.config.SSLConfiguration
+import net.corda.nodeapi.internal.config.MutualSslConfiguration
 import org.apache.activemq.artemis.api.core.client.ActiveMQClient
 import org.apache.activemq.artemis.api.core.client.ActiveMQClient.DEFAULT_ACK_BATCH_SIZE
 import org.apache.activemq.artemis.api.core.client.ClientProducer
@@ -18,7 +17,7 @@ interface ArtemisSessionProvider {
     val started: ArtemisMessagingClient.Started?
 }
 
-class ArtemisMessagingClient(private val config: SSLConfiguration,
+class ArtemisMessagingClient(private val config: MutualSslConfiguration,
                              private val serverAddress: NetworkHostAndPort,
                              private val maxMessageSize: Int) : ArtemisSessionProvider {
     companion object {
@@ -38,8 +37,8 @@ class ArtemisMessagingClient(private val config: SSLConfiguration,
         val locator = ActiveMQClient.createServerLocatorWithoutHA(tcpTransport).apply {
             // Never time out on our loopback Artemis connections. If we switch back to using the InVM transport this
             // would be the default and the two lines below can be deleted.
-            connectionTTL = -1
-            clientFailureCheckPeriod = -1
+            connectionTTL = 60000
+            clientFailureCheckPeriod = 30000
             minLargeMessageSize = maxMessageSize
             isUseGlobalPools = nodeSerializationEnv != null
             addIncomingInterceptor(ArtemisMessageSizeChecksInterceptor(maxMessageSize))
@@ -49,7 +48,7 @@ class ArtemisMessagingClient(private val config: SSLConfiguration,
         // using our TLS certificate.
         // Note that the acknowledgement of messages is not flushed to the Artermis journal until the default buffer
         // size of 1MB is acknowledged.
-        val session = sessionFactory!!.createSession(NODE_P2P_USER, NODE_P2P_USER, false, true, true, locator.isPreAcknowledge, DEFAULT_ACK_BATCH_SIZE)
+        val session = sessionFactory!!.createSession(NODE_P2P_USER, NODE_P2P_USER, false, true, true, false, DEFAULT_ACK_BATCH_SIZE)
         session.start()
         // Create a general purpose producer.
         val producer = session.createProducer()
@@ -59,8 +58,11 @@ class ArtemisMessagingClient(private val config: SSLConfiguration,
     override fun stop() = synchronized(this) {
         started?.run {
             producer.close()
-            // Ensure any trailing messages are committed to the journal
-            session.commit()
+            // Since we are leaking the session outside of this class it may well be already closed.
+            if(!session.isClosed) {
+                // Ensure any trailing messages are committed to the journal
+                session.commit()
+            }
             // Closing the factory closes all the sessions it produced as well.
             sessionFactory.close()
         }

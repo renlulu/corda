@@ -18,6 +18,8 @@ object CommonSchema
  */
 object CommonSchemaV1 : MappedSchema(schemaFamily = CommonSchema.javaClass, version = 1, mappedTypes = emptyList()) {
 
+    override val migrationResource = "common.changelog-master"
+
     @MappedSuperclass
     class LinearState(
             /** [ContractState] attributes */
@@ -49,7 +51,7 @@ object CommonSchemaV1 : MappedSchema(schemaFamily = CommonSchema.javaClass, vers
 
             /** X500Name of participant parties **/
             @Transient
-            open var participants: MutableSet<AbstractParty>? = null,
+            open var participants: MutableSet<AbstractParty?>? = null,
 
             /** [OwnableState] attributes */
 

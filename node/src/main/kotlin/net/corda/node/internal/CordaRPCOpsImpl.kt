@@ -1,6 +1,7 @@
 package net.corda.node.internal
 
 import net.corda.client.rpc.notUsed
+import net.corda.core.CordaRuntimeException
 import net.corda.core.concurrent.CordaFuture
 import net.corda.core.context.InvocationContext
 import net.corda.core.context.InvocationOrigin
@@ -17,39 +18,31 @@ import net.corda.core.internal.FlowStateMachine
 import net.corda.core.internal.RPC_UPLOADER
 import net.corda.core.internal.STRUCTURAL_STEP_PREFIX
 import net.corda.core.internal.sign
-import net.corda.core.messaging.CordaRPCOps
-import net.corda.core.messaging.DataFeed
-import net.corda.core.messaging.FlowHandle
-import net.corda.core.messaging.FlowHandleImpl
-import net.corda.core.messaging.FlowProgressHandle
-import net.corda.core.messaging.FlowProgressHandleImpl
-import net.corda.core.messaging.ParametersUpdateInfo
-import net.corda.core.messaging.RPCReturnsObservables
-import net.corda.core.messaging.StateMachineInfo
-import net.corda.core.messaging.StateMachineTransactionMapping
-import net.corda.core.messaging.StateMachineUpdate
+import net.corda.core.messaging.*
+import net.corda.core.node.NetworkParameters
 import net.corda.core.node.NodeInfo
 import net.corda.core.node.services.AttachmentId
 import net.corda.core.node.services.NetworkMapCache
 import net.corda.core.node.services.Vault
-import net.corda.core.node.services.vault.AttachmentQueryCriteria
-import net.corda.core.node.services.vault.AttachmentSort
-import net.corda.core.node.services.vault.PageSpecification
-import net.corda.core.node.services.vault.QueryCriteria
-import net.corda.core.node.services.vault.Sort
+import net.corda.core.node.services.vault.*
 import net.corda.core.serialization.serialize
 import net.corda.core.transactions.SignedTransaction
 import net.corda.core.utilities.getOrThrow
+import net.corda.core.utilities.loggerFor
 import net.corda.node.services.api.FlowStarter
 import net.corda.node.services.api.ServiceHubInternal
 import net.corda.node.services.messaging.context
 import net.corda.node.services.statemachine.StateMachineManager
 import net.corda.nodeapi.exceptions.NonRpcFlowException
 import net.corda.nodeapi.exceptions.RejectedCommandException
+import net.corda.nodeapi.internal.pendingFlowsCount
 import rx.Observable
+import rx.Subscription
 import java.io.InputStream
+import java.net.ConnectException
 import java.security.PublicKey
 import java.time.Instant
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Server side implementations of RPCs available to MQ based client tools. Execution takes place on the server
@@ -60,23 +53,47 @@ internal class CordaRPCOpsImpl(
         private val smm: StateMachineManager,
         private val flowStarter: FlowStarter,
         private val shutdownNode: () -> Unit
-) : CordaRPCOps {
+) : CordaRPCOps, AutoCloseable {
+
+    private companion object {
+        private val logger = loggerFor<CordaRPCOpsImpl>()
+    }
+
+    private val drainingShutdownHook = AtomicReference<Subscription?>()
+
+    init {
+        services.nodeProperties.flowsDrainingMode.values.filter { it.isDisabled() }.subscribe({
+            cancelDrainingShutdownHook()
+        }, {
+            // Nothing to do in case of errors here.
+        })
+    }
+
+    private fun Pair<Boolean, Boolean>.isDisabled(): Boolean = first && !second
+
+    /**
+     * Returns the RPC protocol version, which is the same the node's platform Version. Exists since version 1 so guaranteed
+     * to be present.
+     */
+    override val protocolVersion: Int get() = nodeInfo().platformVersion
+
     override fun networkMapSnapshot(): List<NodeInfo> {
         val (snapshot, updates) = networkMapFeed()
         updates.notUsed()
         return snapshot
     }
 
+    override val networkParameters: NetworkParameters get() = services.networkParameters
+
     override fun networkParametersFeed(): DataFeed<ParametersUpdateInfo?, ParametersUpdateInfo> {
         return services.networkMapUpdater.trackParametersUpdate()
     }
 
     override fun acceptNewNetworkParameters(parametersHash: SecureHash) {
-        services.networkMapUpdater.acceptNewNetworkParameters(
-                parametersHash,
-                // TODO When multiple identities design will be better specified this should be signature from node operator.
-                { hash -> hash.serialize().sign { services.keyManagementService.sign(it.bytes, services.myInfo.legalIdentities[0].owningKey) } }
-        )
+        // TODO When multiple identities design will be better specified this should be signature from node operator.
+        services.networkMapUpdater.acceptNewNetworkParameters(parametersHash) { hash ->
+            hash.serialize().sign { services.keyManagementService.sign(it.bytes, services.myInfo.legalIdentities[0].owningKey) }
+        }
     }
 
     override fun networkMapFeed(): DataFeed<List<NodeInfo>, NetworkMapCache.MapChange> {
@@ -106,6 +123,8 @@ internal class CordaRPCOpsImpl(
         updates.notUsed()
         return snapshot
     }
+
+    override fun internalFindVerifiedTransaction(txnId: SecureHash): SignedTransaction? = services.validatedTransactions.getTransaction(txnId)
 
     @Suppress("OverridingDeprecatedMember")
     override fun internalVerifiedTransactionsFeed(): DataFeed<List<SignedTransaction>, SignedTransaction> {
@@ -187,7 +206,7 @@ internal class CordaRPCOpsImpl(
     }
 
     override fun uploadAttachment(jar: InputStream): SecureHash {
-        return services.attachments.importAttachment(jar, RPC_UPLOADER, null)
+        return services.attachments.privilegedImportAttachment(jar, RPC_UPLOADER, null)
     }
 
     override fun uploadAttachmentWithMetadata(jar: InputStream, uploader: String, filename: String): SecureHash {
@@ -224,10 +243,21 @@ internal class CordaRPCOpsImpl(
         return services.networkMapCache.getNodeByLegalIdentity(party)
     }
 
-    override fun registeredFlows(): List<String> = services.rpcFlows.map { it.name }.sorted()
+    override fun registeredFlows(): List<String> = services.rpcFlows.asSequence().map(Class<*>::getName).sorted().toList()
 
     override fun clearNetworkMapCache() {
         services.networkMapCache.clearNetworkMapCache()
+    }
+
+    override fun refreshNetworkMapCache() {
+        try {
+            services.networkMapUpdater.updateNetworkMapCache()
+        } catch (e: Exception) {
+            when (e) {
+                is ConnectException -> throw CordaRuntimeException("There is connection problem to network map. The possible causes are incorrect configuration or network map service being down")
+                else -> throw e
+            }
+        }
     }
 
     override fun <T : ContractState> vaultQuery(contractStateType: Class<out T>): Vault.Page<T> {
@@ -262,17 +292,45 @@ internal class CordaRPCOpsImpl(
         return vaultTrackBy(criteria, PageSpecification(), sorting, contractStateType)
     }
 
-    override fun setFlowsDrainingModeEnabled(enabled: Boolean) {
-        services.nodeProperties.flowsDrainingMode.setEnabled(enabled)
+    override fun setFlowsDrainingModeEnabled(enabled: Boolean) = setPersistentDrainingModeProperty(enabled, propagateChange = true)
+
+    override fun isFlowsDrainingModeEnabled() = services.nodeProperties.flowsDrainingMode.isEnabled()
+
+    override fun shutdown() = terminate(false)
+
+    override fun terminate(drainPendingFlows: Boolean) {
+
+        if (drainPendingFlows) {
+            logger.info("Waiting for pending flows to complete before shutting down.")
+            setFlowsDrainingModeEnabled(true)
+            drainingShutdownHook.set(pendingFlowsCount().updates.doOnNext {(completed, total) ->
+                logger.info("Pending flows progress before shutdown: $completed / $total.")
+            }.doOnCompleted { setPersistentDrainingModeProperty(false, false) }.doOnCompleted(::cancelDrainingShutdownHook).doOnCompleted { logger.info("No more pending flows to drain. Shutting down.") }.doOnCompleted(shutdownNode::invoke).subscribe({
+                // Nothing to do on each update here, only completion matters.
+            }, { error ->
+                logger.error("Error while waiting for pending flows to drain in preparation for shutdown. Cause was: ${error.message}", error)
+            }))
+        } else {
+            shutdownNode.invoke()
+        }
     }
 
-    override fun isFlowsDrainingModeEnabled(): Boolean {
-        return services.nodeProperties.flowsDrainingMode.isEnabled()
+    override fun isWaitingForShutdown() = drainingShutdownHook.get() != null
+
+    override fun close() {
+
+        cancelDrainingShutdownHook()
     }
 
-    override fun shutdown() {
-        shutdownNode.invoke()
+    private fun cancelDrainingShutdownHook() {
+
+        drainingShutdownHook.getAndSet(null)?.let {
+            it.unsubscribe()
+            logger.info("Cancelled draining shutdown hook.")
+        }
     }
+
+    private fun setPersistentDrainingModeProperty(enabled: Boolean, propagateChange: Boolean) = services.nodeProperties.flowsDrainingMode.setEnabled(enabled, propagateChange)
 
     private fun stateMachineInfoFromFlowLogic(flowLogic: FlowLogic<*>): StateMachineInfo {
         return StateMachineInfo(flowLogic.runId, flowLogic.javaClass.name, flowLogic.stateMachine.context.toFlowInitiator(), flowLogic.track(), flowLogic.stateMachine.context)

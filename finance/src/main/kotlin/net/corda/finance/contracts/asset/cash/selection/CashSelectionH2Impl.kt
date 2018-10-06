@@ -33,20 +33,27 @@ class CashSelectionH2Impl : AbstractCashSelection() {
     override fun executeQuery(connection: Connection, amount: Amount<Currency>, lockId: UUID, notary: Party?, onlyFromIssuerParties: Set<AbstractParty>, withIssuerRefs: Set<OpaqueBytes>, withResultSet: (ResultSet) -> Boolean): Boolean {
         connection.createStatement().use { it.execute("CALL SET(@t, CAST(0 AS BIGINT));") }
 
+        // state_status = 0 -> UNCONSUMED.
+        // is_relevant = 0 -> RELEVANT.
         val selectJoin = """
                     SELECT vs.transaction_id, vs.output_index, ccs.pennies, SET(@t, ifnull(@t,0)+ccs.pennies) total_pennies, vs.lock_id
                     FROM vault_states AS vs, contract_cash_states AS ccs
                     WHERE vs.transaction_id = ccs.transaction_id AND vs.output_index = ccs.output_index
                     AND vs.state_status = 0
+                    AND vs.relevancy_status = 0
                     AND ccs.ccy_code = ? and @t < ?
                     AND (vs.lock_id = ? OR vs.lock_id is null)
                     """ +
                 (if (notary != null)
                     " AND vs.notary_name = ?" else "") +
-                (if (onlyFromIssuerParties.isNotEmpty())
-                    " AND ccs.issuer_key_hash IN (?)" else "") +
-                (if (withIssuerRefs.isNotEmpty())
-                    " AND ccs.issuer_ref IN (?)" else "")
+                (if (onlyFromIssuerParties.isNotEmpty()) {
+                    val repeats = generateSequence { "?" }.take(onlyFromIssuerParties.size).joinToString(",")
+                    " AND ccs.issuer_key_hash IN ($repeats)"
+                } else "") +
+                (if (withIssuerRefs.isNotEmpty()) {
+                    val repeats = generateSequence { "?" }.take(withIssuerRefs.size).joinToString(",")
+                    " AND ccs.issuer_ref IN ($repeats)"
+                } else "")
 
         // Use prepared statement for protection against SQL Injection (http://www.h2database.com/html/advanced.html#sql_injection)
         connection.prepareStatement(selectJoin).use { psSelectJoin ->
@@ -56,10 +63,12 @@ class CashSelectionH2Impl : AbstractCashSelection() {
             psSelectJoin.setString(++pIndex, lockId.toString())
             if (notary != null)
                 psSelectJoin.setString(++pIndex, notary.name.toString())
-            if (onlyFromIssuerParties.isNotEmpty())
-                psSelectJoin.setObject(++pIndex, onlyFromIssuerParties.map { it.owningKey.toStringShort() as Any }.toTypedArray())
-            if (withIssuerRefs.isNotEmpty())
-                psSelectJoin.setObject(++pIndex, withIssuerRefs.map { it.bytes as Any }.toTypedArray())
+            onlyFromIssuerParties.forEach {
+                psSelectJoin.setString(++pIndex, it.owningKey.toStringShort())
+            }
+            withIssuerRefs.forEach {
+                psSelectJoin.setBytes(++pIndex, it.bytes)
+            }
             log.debug { psSelectJoin.toString() }
 
             psSelectJoin.executeQuery().use { rs ->

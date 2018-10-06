@@ -1,25 +1,26 @@
 package net.corda.testing.internal
 
-import com.nhaarman.mockito_kotlin.doAnswer
+import net.corda.core.contracts.*
 import net.corda.core.crypto.Crypto
 import net.corda.core.crypto.Crypto.generateKeyPair
+import net.corda.core.crypto.SecureHash
 import net.corda.core.identity.CordaX500Name
 import net.corda.core.identity.Party
 import net.corda.core.identity.PartyAndCertificate
 import net.corda.core.node.NodeInfo
-import net.corda.core.utilities.NetworkHostAndPort
+import net.corda.core.transactions.WireTransaction
 import net.corda.core.utilities.loggerFor
-import net.corda.node.services.config.configureDevKeyAndTrustStores
 import net.corda.nodeapi.BrokerRpcSslOptions
-import net.corda.nodeapi.internal.config.SSLConfiguration
-import net.corda.nodeapi.internal.createDevKeyStores
+import net.corda.nodeapi.internal.config.MutualSslConfiguration
+import net.corda.nodeapi.internal.registerDevP2pCertificates
 import net.corda.nodeapi.internal.createDevNodeCa
 import net.corda.nodeapi.internal.crypto.*
+import net.corda.nodeapi.internal.loadDevCaTrustStore
 import net.corda.serialization.internal.amqp.AMQP_ENABLED
+import net.corda.testing.internal.stubs.CertificateStoreStubs
 import java.nio.file.Files
 import java.nio.file.Path
 import java.security.KeyPair
-import java.security.cert.X509Certificate
 import javax.security.auth.x500.X500Principal
 
 @Suppress("unused")
@@ -36,17 +37,17 @@ inline fun <reified T : Any> T.amqpSpecific(reason: String, function: () -> Unit
     loggerFor<T>().info("Ignoring AMQP specific test, reason: $reason")
 }
 
-fun configureTestSSL(legalName: CordaX500Name): SSLConfiguration {
-    return object : SSLConfiguration {
-        override val certificatesDirectory = Files.createTempDirectory("certs")
-        override val keyStorePassword: String get() = "cordacadevpass"
-        override val trustStorePassword: String get() = "trustpass"
-        override val crlCheckSoftFail: Boolean = true
+fun configureTestSSL(legalName: CordaX500Name): MutualSslConfiguration {
 
-        init {
-            configureDevKeyAndTrustStores(legalName)
-        }
+    val certificatesDirectory = Files.createTempDirectory("certs")
+    val config = CertificateStoreStubs.P2P.withCertificatesDirectory(certificatesDirectory)
+    if (config.trustStore.getOptional() == null) {
+        loadDevCaTrustStore().copyTo(config.trustStore.get(true))
     }
+    if (config.keyStore.getOptional() == null) {
+        config.keyStore.get(true).registerDevP2pCertificates(legalName)
+    }
+    return config
 }
 
 private val defaultRootCaName = X500Principal("CN=Corda Root CA,O=R3 Ltd,L=London,C=GB")
@@ -102,17 +103,6 @@ fun BrokerRpcSslOptions.useSslRpcOverrides(): Map<String, String> {
     )
 }
 
-fun SSLConfiguration.noSslRpcOverrides(rpcAdminAddress: NetworkHostAndPort): Map<String, Any> {
-    return mapOf(
-            "rpcSettings.adminAddress" to rpcAdminAddress.toString(),
-            "rpcSettings.useSsl" to "false",
-            "rpcSettings.ssl.certificatesDirectory" to certificatesDirectory.toString(),
-            "rpcSettings.ssl.keyStorePassword" to keyStorePassword,
-            "rpcSettings.ssl.trustStorePassword" to trustStorePassword,
-            "rpcSettings.ssl.crlCheckSoftFail" to true
-    )
-}
-
 /**
  * Until we have proper handling of multiple identities per node, for tests we use the first identity as special one.
  * TODO: Should be removed after multiple identities are introduced.
@@ -126,39 +116,23 @@ fun NodeInfo.chooseIdentityAndCert(): PartyAndCertificate = legalIdentitiesAndCe
  */
 fun NodeInfo.chooseIdentity(): Party = chooseIdentityAndCert().party
 
-fun createNodeSslConfig(path: Path, name: CordaX500Name = CordaX500Name("MegaCorp", "London", "GB")): SSLConfiguration {
-    val sslConfig = object : SSLConfiguration {
-        override val crlCheckSoftFail = true
-        override val certificatesDirectory = path
-        override val keyStorePassword = "serverstorepass"
-        override val trustStorePassword = "trustpass"
-    }
+fun p2pSslOptions(path: Path, name: CordaX500Name = CordaX500Name("MegaCorp", "London", "GB")): MutualSslConfiguration {
+    val sslConfig = CertificateStoreStubs.P2P.withCertificatesDirectory(path, keyStorePassword = "serverstorepass")
     val (rootCa, intermediateCa) = createDevIntermediateCaCertPath()
-    sslConfig.createDevKeyStores(name, rootCa.certificate, intermediateCa)
-    val trustStore = loadOrCreateKeyStore(sslConfig.trustStoreFile, sslConfig.trustStorePassword)
-    trustStore.addOrReplaceCertificate(X509Utilities.CORDA_ROOT_CA, rootCa.certificate)
-    trustStore.save(sslConfig.trustStoreFile, sslConfig.trustStorePassword)
-
+    sslConfig.keyStore.get(true).registerDevP2pCertificates(name, rootCa.certificate, intermediateCa)
+    val trustStore = sslConfig.trustStore.get(true)
+    trustStore[X509Utilities.CORDA_ROOT_CA] = rootCa.certificate
     return sslConfig
 }
 
-fun createKeyPairAndSelfSignedCertificate(): Pair<KeyPair, X509Certificate> {
-    val rpcKeyPair = Crypto.generateKeyPair(X509Utilities.DEFAULT_TLS_SIGNATURE_SCHEME)
-    val testName = X500Principal("CN=Test,O=R3 Ltd,L=London,C=GB")
-    val selfSignCert = X509Utilities.createSelfSignedCACertificate(testName, rpcKeyPair)
-    return Pair(rpcKeyPair, selfSignCert)
-}
-
-fun saveToKeyStore(keyStorePath: Path, rpcKeyPair: KeyPair, selfSignCert: X509Certificate, password: String = "password"): Path {
-    val keyStore = loadOrCreateKeyStore(keyStorePath, password)
-    keyStore.addOrReplaceKey("Key", rpcKeyPair.private, password.toCharArray(), arrayOf(selfSignCert))
-    keyStore.save(keyStorePath, password)
-    return keyStorePath
-}
-
-fun saveToTrustStore(trustStorePath: Path, selfSignCert: X509Certificate, password: String = "password"): Path {
-    val trustStore = loadOrCreateKeyStore(trustStorePath, password)
-    trustStore.addOrReplaceCertificate("Key", selfSignCert)
-    trustStore.save(trustStorePath, password)
-    return trustStorePath
+/** This is the same as the deprecated [WireTransaction] c'tor but avoids the deprecation warning. */
+fun createWireTransaction(inputs: List<StateRef>,
+                          attachments: List<SecureHash>,
+                          outputs: List<TransactionState<*>>,
+                          commands: List<Command<*>>,
+                          notary: Party?,
+                          timeWindow: TimeWindow?,
+                          privacySalt: PrivacySalt = PrivacySalt()): WireTransaction {
+    val componentGroups = WireTransaction.createComponentGroups(inputs, outputs, commands, attachments, notary, timeWindow)
+    return WireTransaction(componentGroups, privacySalt)
 }

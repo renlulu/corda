@@ -14,6 +14,9 @@ import net.corda.testing.http.HttpApi
  * Interface for communicating with Bank of Corda node
  */
 object BankOfCordaClientApi {
+    const val BOC_RPC_USER = "bankUser"
+    const val BOC_RPC_PWD = "test"
+
     /**
      * HTTP API
      */
@@ -31,14 +34,15 @@ object BankOfCordaClientApi {
     fun requestRPCIssue(rpcAddress: NetworkHostAndPort, params: IssueRequestParams): SignedTransaction {
         val client = CordaRPCClient(rpcAddress)
         // TODO: privileged security controls required
-        client.start("bankUser", "test").use { connection ->
+        client.start(BOC_RPC_USER, BOC_RPC_PWD).use { connection ->
             val rpc = connection.proxy
             rpc.waitUntilNetworkReady().getOrThrow()
 
             // Resolve parties via RPC
             val issueToParty = rpc.wellKnownPartyFromX500Name(params.issueToPartyName)
                     ?: throw IllegalStateException("Unable to locate ${params.issueToPartyName} in Network Map Service")
-            val notaryLegalIdentity = rpc.notaryIdentities().firstOrNull { it.name == params.notaryName } ?: throw IllegalStateException("Couldn't locate notary ${params.notaryName} in NetworkMapCache")
+            val notaryLegalIdentity = rpc.notaryIdentities().firstOrNull { it.name == params.notaryName }
+                    ?: throw IllegalStateException("Couldn't locate notary ${params.notaryName} in NetworkMapCache")
 
             val anonymous = true
             val issuerBankPartyRef = OpaqueBytes.of(params.issuerBankPartyRef.toByte())

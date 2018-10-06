@@ -4,15 +4,19 @@ Notaries
 .. topic:: Summary
 
    * *Notary clusters prevent "double-spends"*
-   * *Notary clusters may optionally also validate transactions*
+   * *Notary clusters are also time-stamping authorities. If a transaction includes a time-window, it can only be notarised during that window*
+   * *Notary clusters may optionally also validate transactions, in which case they are called "validating" notaries, as opposed to "non-validating"*
    * *A network can have several notary clusters, each running a different consensus algorithm*
 
-Video
------
-.. raw:: html
+.. only:: htmlmode
 
-    <iframe src="https://player.vimeo.com/video/214138458" width="640" height="360" frameborder="0" webkitallowfullscreen mozallowfullscreen allowfullscreen></iframe>
-    <p></p>
+    Video
+    -----
+    .. raw:: html
+    
+        <iframe src="https://player.vimeo.com/video/214138458" width="640" height="360" frameborder="0" webkitallowfullscreen mozallowfullscreen allowfullscreen></iframe>
+        <p></p>
+
 
 Overview
 --------
@@ -46,16 +50,18 @@ In particular, notary clusters may differ in terms of:
 * **Consensus algorithm** - a notary cluster may choose to run a high-speed, high-trust algorithm such as RAFT, a
   low-speed, low-trust algorithm such as BFT, or any other consensus algorithm it chooses
 
+.. _key_concepts_notaries_validation:
+
 Validation
 ^^^^^^^^^^
 A notary cluster must also decide whether or not to provide **validity consensus** by validating each transaction
 before committing it. In making this decision, it faces the following trade-off:
 
-* If a transaction **is not** checked for validity, it creates the risk of "denial of state" attacks, where a node
+* If a transaction **is not** checked for validity (non-validating notary), it creates the risk of "denial of state" attacks, where a node
   knowingly builds an invalid transaction consuming some set of existing states and sends it to the
   notary cluster, causing the states to be marked as consumed
 
-* If the transaction **is** checked for validity, the notary will need to see the full contents of the transaction and
+* If the transaction **is** checked for validity (validating notary), the notary will need to see the full contents of the transaction and
   its dependencies. This leaks potentially private data to the notary cluster
 
 There are several further points to keep in mind when evaluating this trade-off. In the case of the non-validating
@@ -115,7 +121,7 @@ These include:
 * When a node would prefer to use a different notary cluster for a given transaction due to privacy or efficiency
   concerns
 
-Before these transactions can be created, the states must first all be repointed to the same notary cluster. This is
+Before these transactions can be created, the states must first all be re-pointed to the same notary cluster. This is
 achieved using a special notary-change transaction that takes:
 
 * A single input state

@@ -1,8 +1,9 @@
 package net.corda.serialization.internal.amqp
 
+import net.corda.core.KeepForDJVM
 import net.corda.core.serialization.SerializationContext
-import net.corda.core.serialization.SerializationEncoding
 import net.corda.core.serialization.SerializedBytes
+import net.corda.core.utilities.contextLogger
 import net.corda.serialization.internal.CordaSerializationEncoding
 import net.corda.serialization.internal.SectionId
 import net.corda.serialization.internal.byteArrayOutput
@@ -13,6 +14,7 @@ import java.lang.reflect.Type
 import java.util.*
 import kotlin.collections.LinkedHashSet
 
+@KeepForDJVM
 data class BytesAndSchemas<T : Any>(
         val obj: SerializedBytes<T>,
         val schema: Schema,
@@ -24,10 +26,14 @@ data class BytesAndSchemas<T : Any>(
  * @param serializerFactory This is the factory for [AMQPSerializer] instances and can be shared across multiple
  * instances and threads.
  */
-open class SerializationOutput @JvmOverloads constructor(
-        internal val serializerFactory: SerializerFactory,
-        private val encoding: SerializationEncoding? = null
+@KeepForDJVM
+open class SerializationOutput constructor(
+        internal val serializerFactory: SerializerFactory
 ) {
+    companion object {
+        private val logger = contextLogger()
+    }
+
     private val objectHistory: MutableMap<Any, Int> = IdentityHashMap()
     private val serializerHistory: MutableSet<AMQPSerializer<*>> = LinkedHashSet()
     internal val schemaHistory: MutableSet<TypeNotation> = LinkedHashSet()
@@ -41,11 +47,16 @@ open class SerializationOutput @JvmOverloads constructor(
     fun <T : Any> serialize(obj: T, context: SerializationContext): SerializedBytes<T> {
         try {
             return _serialize(obj, context)
+        } catch (amqp: AMQPNotSerializableException) {
+            amqp.log("Serialize", logger)
+            throw NotSerializableException(amqp.mitigation)
         } finally {
             andFinally()
         }
     }
 
+    // NOTE: No need to handle AMQPNotSerializableExceptions here as this is an internal
+    // only / testing function and it doesn't matter if they escape
     @Throws(NotSerializableException::class)
     fun <T : Any> serializeAndReturnSchema(obj: T, context: SerializationContext): BytesAndSchemas<T> {
         try {
@@ -77,6 +88,7 @@ open class SerializationOutput @JvmOverloads constructor(
             var stream: OutputStream = it
             try {
                 amqpMagic.writeTo(stream)
+                val encoding = context.encoding
                 if (encoding != null) {
                     SectionId.ENCODING.writeTo(stream)
                     (encoding as CordaSerializationEncoding).writeTo(stream)

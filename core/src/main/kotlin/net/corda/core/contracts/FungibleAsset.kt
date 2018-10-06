@@ -1,9 +1,15 @@
 package net.corda.core.contracts
 
+import net.corda.core.KeepForDJVM
 import net.corda.core.flows.FlowException
 import net.corda.core.identity.AbstractParty
 import java.security.PublicKey
 
+/**
+ * Thrown if a request is made to spend an amount of a [FungibleAsset] but there aren't enough tokens in the vault.
+ *
+ * @property amountMissing An [Amount] that specifies how many tokens were missing.
+ */
 class InsufficientBalanceException(val amountMissing: Amount<*>) : FlowException("Insufficient balance, missing $amountMissing")
 
 /**
@@ -20,6 +26,7 @@ class InsufficientBalanceException(val amountMissing: Amount<*>) : FlowException
  * @param T a type that represents the asset in question. This should describe the basic type of the asset
  * (GBP, USD, oil, shares in company <X>, etc.) and any additional metadata (issuer, grade, class, etc.).
  */
+@KeepForDJVM
 interface FungibleAsset<T : Any> : OwnableState {
     /**
      * Amount represents a positive quantity of some issued product which can be cash, tokens, assets, or generally

@@ -10,12 +10,15 @@ Transactions
      * *It is contractually valid*
      * *It is signed by the required parties*
 
-Video
------
-.. raw:: html
+.. only:: htmlmode
 
-    <iframe src="https://player.vimeo.com/video/213879807" width="640" height="360" frameborder="0" webkitallowfullscreen mozallowfullscreen allowfullscreen></iframe>
-    <p></p>
+   Video
+   -----
+   .. raw:: html
+   
+       <iframe src="https://player.vimeo.com/video/213879807" width="640" height="360" frameborder="0" webkitallowfullscreen mozallowfullscreen allowfullscreen></iframe>
+       <p></p>
+
 
 Overview
 --------
@@ -30,7 +33,7 @@ Here is an example of an update transaction, with two inputs and two outputs:
    :scale: 25%
    :align: center
 
-A transaction can contain any number of inputs and outputs of any type:
+A transaction can contain any number of inputs, outputs and references of any type:
 
 * They can include many different state types (e.g. both cash and bonds)
 * They can be issuances (have zero inputs) or exits (have zero outputs)
@@ -105,6 +108,18 @@ Each required signers should only sign the transaction if the following two cond
 If the transaction gathers all the required signatures but these conditions do not hold, the transaction's outputs
 will not be valid, and will not be accepted as inputs to subsequent transactions.
 
+Reference states
+----------------
+
+As mentioned in :doc:`key-concepts-states`, some states need to be referred to by the contracts of other input or output
+states but not updated/consumed. This is where reference states come in. When a state is added to the references list of
+a transaction, instead of the inputs or outputs list, then it is treated as a *reference state*. There are two important
+differences between regular states and reference states:
+
+* The specified notary for the transaction **does** check whether the reference states are current. However, reference
+  states are not consumed when the transaction containing them is committed to the ledger.
+* The contracts for reference states are not executed for the transaction containing them.
+
 Other transaction components
 ----------------------------
 As well as input states and output states, transactions contain:
@@ -112,9 +127,11 @@ As well as input states and output states, transactions contain:
 * Commands
 * Attachments
 * Time-Window
+* Notary
 
-For example, a transaction where Alice pays off £5 of an IOU with Bob using a £5 cash payment, supported by two
-attachments and a time-window, may look as follows:
+For example, suppose we have a transaction where Alice uses a £5 cash payment to pay off £5 of an IOU with Bob.
+This transaction has two supporting attachments and will only be notarised by NotaryClusterA if the notary pool
+receives it within the specified time-window. This transaction would look as follows:
 
 .. image:: resources/full-tx.png
    :scale: 25%
@@ -181,3 +198,13 @@ In some cases, we want a transaction proposed to only be approved during a certa
 
 In such cases, we can add a *time-window* to the transaction. Time-windows specify the time window during which the
 transaction can be committed. We discuss time-windows in the section on :doc:`key-concepts-time-windows`.
+
+Notary
+^^^^^^
+A notary pool is a network service that provides uniqueness consensus by attesting that, for a given transaction,
+it has not already signed other transactions that consume any of the proposed transaction’s input states.
+The notary pool provides the point of finality in the system.
+
+Note that if the notary entity is absent then the transaction is not notarised at all. This is intended for
+issuance/genesis transactions that don't consume any other states and thus can't double spend anything.
+For more information on the notary services, see :doc:`key-concepts-notaries`.

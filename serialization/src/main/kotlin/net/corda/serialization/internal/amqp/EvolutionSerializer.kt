@@ -1,5 +1,6 @@
 package net.corda.serialization.internal.amqp
 
+import net.corda.core.KeepForDJVM
 import net.corda.core.internal.isConcreteClass
 import net.corda.core.serialization.DeprecatedConstructorForDeserialization
 import net.corda.core.serialization.SerializationContext
@@ -13,6 +14,7 @@ import java.lang.reflect.Type
 import kotlin.reflect.KFunction
 import kotlin.reflect.full.findAnnotation
 import kotlin.reflect.jvm.javaType
+import kotlin.reflect.jvm.jvmErasure
 
 
 /**
@@ -30,8 +32,8 @@ abstract class EvolutionSerializer(
         clazz: Type,
         factory: SerializerFactory,
         protected val oldReaders: Map<String, OldParam>,
-        override val kotlinConstructor: KFunction<Any>?) : ObjectSerializer(clazz, factory) {
-
+        override val kotlinConstructor: KFunction<Any>
+) : ObjectSerializer(clazz, factory) {
     // explicitly set as empty to indicate it's unused by this type of serializer
     override val propertySerializers = PropertySerializersEvolution()
 
@@ -43,6 +45,7 @@ abstract class EvolutionSerializer(
      * should be placed
      * @param property object to read the actual property value
      */
+    @KeepForDJVM
     data class OldParam(var resultsIndex: Int, val property: PropertySerializer) {
         fun readProperty(obj: Any?, schemas: SerializationSchemas, input: DeserializationInput,
                          new: Array<Any?>, context: SerializationContext
@@ -71,7 +74,7 @@ abstract class EvolutionSerializer(
          * TODO: rename annotation
          */
         private fun getEvolverConstructor(type: Type, oldArgs: Map<String, OldParam>): KFunction<Any>? {
-            val clazz: Class<*> = type.asClass()!!
+            val clazz: Class<*> = type.asClass()
 
             if (!clazz.isConcreteClass) return null
 
@@ -115,12 +118,30 @@ abstract class EvolutionSerializer(
                 readersAsSerialized: Map<String, OldParam>): AMQPSerializer<Any> {
             val constructorArgs = arrayOfNulls<Any?>(constructor.parameters.size)
 
+            // Java doesn't care about nullability unless it's a primitive in which
+            // case it can't be referenced. Unfortunately whilst Kotlin does apply
+            // Nullability annotations we cannot use them here as they aren't
+            // retained at runtime so we cannot rely on the absence of
+            // any particular NonNullable annotation type to indicate cross
+            // compiler nullability
+            val isKotlin = (new.type.javaClass.declaredAnnotations.any {
+                        it.annotationClass.qualifiedName == "kotlin.Metadata"
+            })
+
             constructor.parameters.withIndex().forEach {
-                readersAsSerialized[it.value.name!!]?.apply {
-                    this.resultsIndex = it.index
-                } ?: if (!it.value.type.isMarkedNullable) {
-                    throw NotSerializableException(
-                            "New parameter ${it.value.name} is mandatory, should be nullable for evolution to work")
+                if ((readersAsSerialized[it.value.name!!] ?.apply { this.resultsIndex = it.index }) == null) {
+                    // If there is no value in the byte stream to map to the parameter of the constructor
+                    // this is ok IFF it's a Kotlin class and the parameter is non nullable OR
+                    // its a Java class and the parameter is anything but an unboxed primitive.
+                    // Otherwise we throw the error and leave
+                    if ((isKotlin && !it.value.type.isMarkedNullable)
+                            || (!isKotlin && isJavaPrimitive(it.value.type.jvmErasure.java))
+                    ) {
+                        throw AMQPNotSerializableException(
+                                new.type,
+                                "New parameter \"${it.value.name}\" is mandatory, should be nullable for evolution " +
+                                        "to work, isKotlinClass=$isKotlin type=${it.value.type}")
+                    }
                 }
             }
             return EvolutionSerializerViaConstructor(new.type, factory, readersAsSerialized, constructor, constructorArgs)
@@ -149,8 +170,10 @@ abstract class EvolutionSerializer(
          * @param factory the [SerializerFactory] associated with the serialization
          * context this serializer is being built for
          */
-        fun make(old: CompositeType, new: ObjectSerializer,
-                 factory: SerializerFactory): AMQPSerializer<Any> {
+        fun make(old: CompositeType,
+                 new: ObjectSerializer,
+                 factory: SerializerFactory
+        ): AMQPSerializer<Any> {
             // The order in which the properties were serialised is important and must be preserved
             val readersAsSerialized = LinkedHashMap<String, OldParam>()
             old.fields.forEach {
@@ -158,7 +181,7 @@ abstract class EvolutionSerializer(
                     OldParam(-1, PropertySerializer.make(it.name, EvolutionPropertyReader(),
                             it.getTypeAsClass(factory.classloader), factory))
                 } catch (e: ClassNotFoundException) {
-                    throw NotSerializableException(e.message)
+                    throw AMQPNotSerializableException(new.type, e.message ?: "")
                 }
             }
 
@@ -166,7 +189,7 @@ abstract class EvolutionSerializer(
             // return the synthesised object which is, given the absence of a constructor, a no op
             val constructor = getEvolverConstructor(new.type, readersAsSerialized) ?: return new
 
-            val classProperties = new.type.asClass()?.propertyDescriptors() ?: emptyMap()
+            val classProperties = new.type.asClass().propertyDescriptors()
 
             return if (classProperties.isNotEmpty() && constructor.parameters.isEmpty()) {
                 makeWithSetters(new, factory, constructor, readersAsSerialized, classProperties)
@@ -187,7 +210,7 @@ class EvolutionSerializerViaConstructor(
         clazz: Type,
         factory: SerializerFactory,
         oldReaders: Map<String, EvolutionSerializer.OldParam>,
-        kotlinConstructor: KFunction<Any>?,
+        kotlinConstructor: KFunction<Any>,
         private val constructorArgs: Array<Any?>) : EvolutionSerializer(clazz, factory, oldReaders, kotlinConstructor) {
     /**
      * Unlike a normal [readObject] call where we simply apply the parameter deserialisers
@@ -219,7 +242,7 @@ class EvolutionSerializerViaSetters(
         clazz: Type,
         factory: SerializerFactory,
         oldReaders: Map<String, EvolutionSerializer.OldParam>,
-        kotlinConstructor: KFunction<Any>?,
+        kotlinConstructor: KFunction<Any>,
         private val setters: Map<String, PropertyAccessor>) : EvolutionSerializer(clazz, factory, oldReaders, kotlinConstructor) {
 
     override fun readObject(obj: Any, schemas: SerializationSchemas, input: DeserializationInput,
@@ -259,6 +282,7 @@ abstract class EvolutionSerializerGetterBase {
  * The normal use case for generating an [EvolutionSerializer]'s based on the differences
  * between the received schema and the class as it exists now on the class path,
  */
+@KeepForDJVM
 class EvolutionSerializerGetter : EvolutionSerializerGetterBase() {
     override fun getEvolutionSerializer(factory: SerializerFactory,
                                         typeNotation: TypeNotation,

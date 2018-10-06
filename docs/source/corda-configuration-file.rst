@@ -1,4 +1,4 @@
-Node configuration
+Configuring a node
 ==================
 
 .. contents::
@@ -19,13 +19,13 @@ If you specify both command line arguments at the same time, the node will fail 
 
 Format
 ------
-The Corda configuration file uses the HOCON format which is superset of JSON. Please visit
+The Corda configuration file uses the HOCON format which is a superset of JSON. Please visit
 `<https://github.com/typesafehub/config/blob/master/HOCON.md>`_ for further details.
 
 Please do NOT use double quotes (``"``) in configuration keys.
 
-Node setup will log `Config files should not contain \" in property names. Please fix: [key]` as error
-when it founds double quotes around keys.
+Node setup will log `Config files should not contain \" in property names. Please fix: [key]` as an error
+when it finds double quotes around keys.
 This prevents configuration errors when mixing keys containing ``.`` wrapped with double quotes and without them
 e.g.:
 The property `"dataSourceProperties.dataSourceClassName" = "val"` in ``reference.conf``
@@ -72,9 +72,10 @@ absolute path to the node's base directory.
                   If this parameter is set to `false` the rigorous CRL checking takes place, meaning that each certificate in the
                   certificate path being checked needs to have the CRL distribution point extension set and pointing to a URL serving a valid CRL.
 
+.. _databaseConfiguration:
+
 :database: Database configuration:
 
-        :serverNameTablePrefix: Prefix string to apply to all the database tables. The default is no prefix.
         :transactionIsolationLevel: Transaction isolation level as defined by the ``TRANSACTION_`` constants in
             ``java.sql.Connection``, but without the ``TRANSACTION_`` prefix. Defaults to REPEATABLE_READ.
         :exportHibernateJMXStatistics: Whether to export Hibernate JMX statistics (caution: expensive run-time overhead)
@@ -83,7 +84,9 @@ absolute path to the node's base directory.
     Currently the defaults in ``/node/src/main/resources/reference.conf`` are as shown in the first example. This is currently
     the only configuration that has been tested, although in the future full support for other storage layers will be validated.
 
-:h2port: A number that's used to pick the H2 JDBC server port. If not set a randomly chosen port will be used.
+:h2Port: Deprecated. Use ``h2Settings`` instead.
+
+:h2Settings:  Sets the H2 JDBC server host and port. See :doc:`node-database-access-h2`. For non-localhost address the database passowrd needs to be set in ``dataSourceProperties``.
 
 :messagingServerAddress: The address of the ArtemisMQ broker instance. If not provided the node will run one locally.
 
@@ -93,29 +96,38 @@ absolute path to the node's base directory.
         note that the host is the included as the advertised entry in the network map. As a result the value listed
         here must be externally accessible when running nodes across a cluster of machines. If the provided host is unreachable,
         the node will try to auto-discover its public one.
+        
+:additionalP2PAddresses: An array of additional host:port values, which will be included in the advertised NodeInfo in the network map in addition to the ``p2pAddress``.
+    Nodes can use this configuration option to advertise HA endpoints and aliases to external parties. If not specified the default value is an empty list.
 
-:p2pMessagingRetry: Only used for notarisation requests. When the response doesn't arrive in time, the message is
-    resent to a different notary-replica round-robin in case of clustered notaries.
+:flowTimeout: When a flow implementing the ``TimedFlow`` interface does not complete in time, it is restarted from the
+    initial checkpoint. Currently only used for notarisation requests: if a notary replica dies while processing a notarisation request,
+    the client flow eventually times out and gets restarted. On restart the request is resent to a different notary replica
+    in a round-robin fashion (assuming the notary is clustered).
 
-        :messageRedeliveryDelay: The initial retry delay, e.g. `30 seconds`.
-        :maxRetryCount: How many retries to attempt.
-        :backoffBase: The base of the exponential backoff, `t_{wait} = messageRedeliveryDelay * backoffBase^{retryCount}`.
+        :timeout: The initial flow timeout period, e.g. `30 seconds`.
+        :maxRestartCount: Maximum number of times the flow will restart before resulting in an error.
+        :backoffBase: The base of the exponential backoff, `t_{wait} = timeout * backoffBase^{retryCount}`.
 
-:rpcAddress: The address of the RPC system on which RPC requests can be made to the node. If not provided then the node will run without RPC. This is now deprecated in favour of the ``rpcSettings`` block.
+:rpcAddress: (Deprecated) The address of the RPC system on which RPC requests can be made to the node. If not provided then the node will run without RPC. This is now deprecated in favour of the ``rpcSettings`` block.
 
-:rpcSettings: Options for the RPC server.
+:rpcSettings: Options for the RPC server exposed by the Node.
 
-        :useSsl: (optional) boolean, indicates whether the node should require clients to use SSL for RPC connections, defaulted to ``false``.
+        :address: host and port for the RPC server binding.
+        :adminAddress: host and port for the RPC admin binding (this is the endpoint that the node process will connect to).
         :standAloneBroker: (optional) boolean, indicates whether the node will connect to a standalone broker for RPC, defaulted to ``false``.
-        :address: (optional) host and port for the RPC server binding, if any.
-        :adminAddress: (optional) host and port for the RPC admin binding (only required when ``useSsl`` is ``false``, because the node connects to Artemis using SSL to ensure admin privileges are not accessible outside the node).
-        :ssl: (optional) SSL settings for the RPC server.
+        :useSsl: (optional) boolean, indicates whether or not the node should require clients to use SSL for RPC connections, defaulted to ``false``.
+        :ssl: (mandatory if ``useSsl=true``) SSL settings for the RPC server.
 
-                :keyStorePassword: password for the key store.
-                :trustStorePassword: password for the trust store.
-                :certificatesDirectory: directory in which the stores will be searched, unless absolute paths are provided.
-                :sslKeystore: absolute path to the ssl key store, defaulted to ``certificatesDirectory / "sslkeystore.jks"``.
-                :trustStoreFile: absolute path to the trust store, defaulted to ``certificatesDirectory / "truststore.jks"``.
+                :keyStorePath: Absolute path to the key store containing the RPC SSL certificate.
+                :keyStorePassword: Password for the key store.
+
+        .. note:: The RPC SSL certificate is used by RPC clients to authenticate the connection.
+            The Node operator must provide RPC clients with a truststore containing the certificate they can trust.
+            We advise Node operators to not use the P2P keystore for RPC.
+            The node ships with a command line argument "--just-generate-rpc-ssl-settings", which generates a secure keystore
+            and truststore that can be used to secure the RPC connection. You can use this if you have no special requirements.
+
 
 :security: Contains various nested fields controlling user authentication/authorization, in particular for RPC accesses. See
     :doc:`clientrpc` for details.
@@ -126,7 +138,7 @@ absolute path to the node's base directory.
     :validating: Boolean to determine whether the notary is a validating or non-validating one.
 
     :serviceLegalName: If the node is part of a distributed cluster, specify the legal name of the cluster. At runtime, Corda
-    checks whether this name matches the name of the certificate of the notary cluster.
+        checks whether this name matches the name of the certificate of the notary cluster.
 
     :raft: If part of a distributed Raft cluster specify this config object, with the following settings:
 
@@ -183,7 +195,13 @@ absolute path to the node's base directory.
     :doormanURL: Root address of the network registration service.
     :networkMapURL: Root address of the network map service.
 
-.. note:: Only one of ``compatibilityZoneURL`` or ``networkServices`` should be used.
+        .. note:: Only one of ``compatibilityZoneURL`` or ``networkServices`` should be used.
+
+:devModeOptions: Allows modification of certain ``devMode`` features
+
+    :allowCompatibilityZone: Allows a node configured to operate in development mode to connect to a compatibility zone.
+
+        .. note:: This is an unsupported configuration.
 
 :jvmArgs: An optional list of JVM args, as strings, which replace those inherited from the command line when launching via ``corda.jar``
     only. e.g. ``jvmArgs = [ "-Xmx220m", "-Xms220m", "-XX:+UseG1GC" ]``
@@ -218,11 +236,24 @@ absolute path to the node's base directory.
             .. note:: This is temporary feature for onboarding network participants that limits their visibility for privacy reasons.
 
 :tlsCertCrlDistPoint: CRL distribution point (i.e. URL) for the TLS certificate. Default value is NULL, which indicates no CRL availability for the TLS certificate.
-                      Note: If crlCheckSoftFail is FALSE (meaning that there is the strict CRL checking mode) this value needs to be set.
+
+                      .. note:: This needs to be set if crlCheckSoftFail is false (i.e. strict CRL checking is on).
 
 :tlsCertCrlIssuer: CRL issuer (given in the X500 name format) for the TLS certificate. Default value is NULL,
                    which indicates that the issuer of the TLS certificate is also the issuer of the CRL.
-                   Note: If this parameter is set then the tlsCertCrlDistPoint needs to be set as well.
+
+                   .. note:: If this parameter is set then `tlsCertCrlDistPoint` needs to be set as well.
+
+:flowMonitorPeriodMillis: ``Duration`` of the period suspended flows waiting for IO are logged. Default value is ``60 seconds``.
+
+:flowMonitorSuspensionLoggingThresholdMillis: Threshold ``Duration`` suspended flows waiting for IO need to exceed before they are logged. Default value is ``60 seconds``.
+
+:jmxReporterType:  Provides an option for registering an alternative JMX reporter. Available options are ``JOLOKIA`` and ``NEW_RELIC``. If no value is provided, ``JOLOKIA`` will be used.
+
+                    .. note:: The Jolokia configuration is provided by default.  The New Relic configuration leverages the Dropwizard_ NewRelicReporter solution. See `Introduction to New Relic for Java`_ for details on how to get started and how to install the New Relic Java agent.
+
+                        .. _Dropwizard: https://metrics.dropwizard.io/3.2.3/manual/third-party.html
+                        .. _Introduction to New Relic for Java: https://docs.newrelic.com/docs/agents/java-agent/getting-started/introduction-new-relic-java
 
 Examples
 --------
@@ -251,77 +282,36 @@ Simple notary configuration file:
     devMode : false
     compatibilityZoneURL : "https://cz.corda.net"
 
-An example ``web-server.conf`` file is as follow:
-
-.. parsed-literal::
-
-    myLegalName : "O=Notary Service,OU=corda,L=London,C=GB"
-    keyStorePassword : "cordacadevpass"
-    trustStorePassword : "trustpass"
-    rpcSettings = {
-        useSsl = false
-        standAloneBroker = false
-        address : "my-corda-node:10003"
-        adminAddress : "my-corda-node:10004"
-    }
-    rpcUsers : [{ username=user1, password=letmein, permissions=[ StartFlow.net.corda.protocols.CashProtocol ] }]
-
-Configuring a node where the Corda Comatability Zone's registration and Network Map services exist on different URLs
+Configuring a node where the Corda Compatibility Zone's registration and Network Map services exist on different URLs
 
 .. literalinclude:: example-code/src/main/resources/example-node-with-networkservices.conf
 
-Fields
-------
-
-The available config fields are listed below. ``baseDirectory`` is available as a substitution value, containing the absolute
-path to the node's base directory.
-
-:myLegalName: The legal identity of the node acts as a human readable alias to the node's public key and several demos use
-        this to lookup the NodeInfo.
-
-:keyStorePassword: The password to unlock the KeyStore file (``<workspace>/certificates/sslkeystore.jks``) containing the
-    node certificate and private key.
-
-    .. note:: This is the non-secret value for the development certificates automatically generated during the first node run.
-       Longer term these keys will be managed in secure hardware devices.
-
-:trustStorePassword: The password to unlock the Trust store file (``<workspace>/certificates/truststore.jks``) containing
-    the Corda network root certificate. This is the non-secret value for the development certificates automatically
-    generated during the first node run.
-
-    .. note:: Longer term these keys will be managed in secure hardware devices.
-
-:rpcSettings: Options for the RPC server.
-
-        :useSsl: (optional) boolean, indicates whether the node should require clients to use SSL for RPC connections, defaulted to ``false``.
-        :standAloneBroker: (optional) boolean, indicates whether the node will connect to a standalone broker for RPC, defaulted to ``false``.
-        :address: (optional) host and port for the RPC server binding, if any.
-        :adminAddress: (optional) host and port for the RPC admin binding (only required when ``useSsl`` is ``false``, because the node connects to Artemis using SSL to ensure admin privileges are not accessible outside the node).
-        :ssl: (optional) SSL settings for the RPC client.
-
-                :keyStorePassword: password for the key store.
-                :trustStorePassword: password for the trust store.
-                :certificatesDirectory: directory in which the stores will be searched, unless absolute paths are provided.
-                :sslKeystore: absolute path to the ssl key store, defaulted to ``certificatesDirectory / "sslkeystore.jks"``.
-                :trustStoreFile: absolute path to the trust store, defaulted to ``certificatesDirectory / "truststore.jks"``.
-                :trustStoreFile: absolute path to the trust store, defaulted to ``certificatesDirectory / "truststore.jks"``.
-
-:rpcUsers: A list of users who are authorised to access the RPC system. Each user in the list is a config object with the
-        following fields:
-
-        :username: Username consisting only of word characters (a-z, A-Z, 0-9 and _)
-        :password: The password
-        :permissions: A list of permissions for starting flows via RPC. To give the user the permission to start the flow
-            ``foo.bar.FlowClass``, add the string ``StartFlow.foo.bar.FlowClass`` to the list. If the list
-            contains the string ``ALL``, the user can start any flow via RPC. This value is intended for administrator
-            users and for development.
-
 Fields Override
 ---------------
-JVM options or environmental variables prefixed ``corda.`` can override ``node.conf`` fields.
-Provided system properties also can set value for absent fields in ``node.conf``.
-Example adding/overriding keyStore password when starting Corda node:
+JVM options or environmental variables prefixed with ``corda.`` can override ``node.conf`` fields.
+Provided system properties can also set values for absent fields in ``node.conf``.
+
+This is an example of adding/overriding the keyStore password :
 
 .. sourcecode:: shell
 
     java -Dcorda.rpcSettings.ssl.keyStorePassword=mypassword -jar node.jar
+
+CRL Configuration
+-----------------
+The Corda Network provides an endpoint serving an empty certificate revocation list for the TLS-level certificates.
+This is intended for deployments that do not provide a CRL infrastructure but still require a strict CRL mode checking.
+In such a case use the following URL in `tlsCertCrlDistPoint` option configuration:
+
+    .. sourcecode:: kotlin
+
+        "https://crl.cordaconnect.org/cordatls.crl"
+
+Together with the above configuration `tlsCertCrlIssuer` option needs to be set to the following value:
+
+    .. sourcecode:: kotlin
+
+        "C=US, L=New York, O=R3 HoldCo LLC, OU=Corda, CN=Corda Root CA"
+
+This set-up ensures that the TLS-level certificates are embedded with the CRL distribution point referencing the CRL issued by R3.
+In cases where a proprietary CRL infrastructure is provided those values need to be changed accordingly.

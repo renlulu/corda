@@ -4,34 +4,40 @@ import com.nhaarman.mockito_kotlin.doReturn
 import com.nhaarman.mockito_kotlin.whenever
 import io.netty.channel.EventLoopGroup
 import io.netty.channel.nio.NioEventLoopGroup
+import net.corda.core.crypto.newSecureRandom
 import net.corda.core.identity.CordaX500Name
 import net.corda.core.internal.div
 import net.corda.core.toFuture
 import net.corda.core.utilities.NetworkHostAndPort
-import net.corda.node.services.config.CertChainPolicyConfig
 import net.corda.node.services.config.NodeConfiguration
 import net.corda.node.services.config.configureWithDevSSLCertificate
 import net.corda.node.services.messaging.ArtemisMessagingServer
-import net.corda.nodeapi.ArtemisTcpTransport.Companion.CIPHER_SUITES
 import net.corda.nodeapi.internal.ArtemisMessagingClient
 import net.corda.nodeapi.internal.ArtemisMessagingComponent.Companion.P2P_PREFIX
-import net.corda.nodeapi.internal.ArtemisMessagingComponent.Companion.PEER_USER
-import net.corda.nodeapi.internal.config.SSLConfiguration
-import net.corda.nodeapi.internal.createDevKeyStores
-import net.corda.nodeapi.internal.crypto.*
+import net.corda.nodeapi.internal.ArtemisTcpTransport
+import net.corda.nodeapi.internal.config.MutualSslConfiguration
+import net.corda.nodeapi.internal.crypto.X509Utilities
 import net.corda.nodeapi.internal.protonwrapper.messages.MessageStatus
 import net.corda.nodeapi.internal.protonwrapper.netty.AMQPClient
+import net.corda.nodeapi.internal.protonwrapper.netty.AMQPConfiguration
 import net.corda.nodeapi.internal.protonwrapper.netty.AMQPServer
-import net.corda.testing.core.*
+import net.corda.nodeapi.internal.protonwrapper.netty.init
+import net.corda.nodeapi.internal.registerDevP2pCertificates
+import net.corda.nodeapi.internal.registerDevSigningCertificates
+import net.corda.testing.core.ALICE_NAME
+import net.corda.testing.core.BOB_NAME
+import net.corda.testing.core.CHARLIE_NAME
+import net.corda.testing.core.MAX_MESSAGE_SIZE
+import net.corda.testing.driver.PortAllocation
 import net.corda.testing.internal.createDevIntermediateCaCertPath
 import net.corda.testing.internal.rigorousMock
+import net.corda.testing.internal.stubs.CertificateStoreStubs
 import org.apache.activemq.artemis.api.core.RoutingType
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.Assert.assertArrayEquals
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
-import java.security.SecureRandom
 import java.security.cert.X509Certificate
 import javax.net.ssl.*
 import kotlin.concurrent.thread
@@ -43,9 +49,10 @@ class ProtonWrapperTests {
     @JvmField
     val temporaryFolder = TemporaryFolder()
 
-    private val serverPort = freePort()
-    private val serverPort2 = freePort()
-    private val artemisPort = freePort()
+    private val portAllocation = PortAllocation.Incremental(10000)
+    private val serverPort = portAllocation.nextPort()
+    private val serverPort2 = portAllocation.nextPort()
+    private val artemisPort = portAllocation.nextPort()
 
     private abstract class AbstractNodeConfiguration : NodeConfiguration
 
@@ -83,6 +90,22 @@ class ProtonWrapperTests {
     }
 
     @Test
+    fun `AMPQ Client fails to connect when crl soft fail check is disabled`() {
+        val amqpServer = createServer(serverPort, CordaX500Name("Rogue 1", "London", "GB"),
+                maxMessageSize = MAX_MESSAGE_SIZE, crlCheckSoftFail = false)
+        amqpServer.use {
+            amqpServer.start()
+            val amqpClient = createClient()
+            amqpClient.use {
+                val clientConnected = amqpClient.onConnection.toFuture()
+                amqpClient.start()
+                val clientConnect = clientConnected.get()
+                assertEquals(false, clientConnect.connected)
+            }
+        }
+    }
+
+    @Test
     fun `AMPQ Client refuses to connect to unexpected server`() {
         val amqpServer = createServer(serverPort, CordaX500Name("Rogue 1", "London", "GB"))
         amqpServer.use {
@@ -97,44 +120,40 @@ class ProtonWrapperTests {
         }
     }
 
-    private fun SSLConfiguration.createTrustStore(rootCert: X509Certificate) {
-        val trustStore = loadOrCreateKeyStore(trustStoreFile, trustStorePassword)
-        trustStore.addOrReplaceCertificate(X509Utilities.CORDA_ROOT_CA, rootCert)
-        trustStore.save(trustStoreFile, trustStorePassword)
-    }
+    private fun MutualSslConfiguration.createTrustStore(rootCert: X509Certificate) {
 
+        trustStore.get(true)[X509Utilities.CORDA_ROOT_CA] = rootCert
+    }
 
     @Test
     fun `Test AMQP Client with invalid root certificate`() {
-        val sslConfig = object : SSLConfiguration {
-            override val certificatesDirectory = temporaryFolder.root.toPath()
-            override val keyStorePassword = "serverstorepass"
-            override val trustStorePassword = "trustpass"
-            override val crlCheckSoftFail: Boolean = true
-        }
+        val certificatesDirectory = temporaryFolder.root.toPath()
+        val signingCertificateStore = CertificateStoreStubs.Signing.withCertificatesDirectory(certificatesDirectory, "serverstorepass")
+        val sslConfig = CertificateStoreStubs.P2P.withCertificatesDirectory(certificatesDirectory, keyStorePassword = "serverstorepass")
 
         val (rootCa, intermediateCa) = createDevIntermediateCaCertPath()
 
         // Generate server cert and private key and populate another keystore suitable for SSL
-        sslConfig.createDevKeyStores(ALICE_NAME, rootCa.certificate, intermediateCa)
+        signingCertificateStore.get(true).also { it.registerDevSigningCertificates(ALICE_NAME, rootCa.certificate, intermediateCa) }
+        sslConfig.keyStore.get(true).also { it.registerDevP2pCertificates(ALICE_NAME, rootCa.certificate, intermediateCa) }
         sslConfig.createTrustStore(rootCa.certificate)
 
-        val keyStore = loadKeyStore(sslConfig.sslKeystore, sslConfig.keyStorePassword)
-        val trustStore = loadKeyStore(sslConfig.trustStoreFile, sslConfig.trustStorePassword)
+        val keyStore = sslConfig.keyStore.get()
+        val trustStore = sslConfig.trustStore.get()
 
         val context = SSLContext.getInstance("TLS")
         val keyManagerFactory = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
-        keyManagerFactory.init(keyStore, sslConfig.keyStorePassword.toCharArray())
+        keyManagerFactory.init(keyStore)
         val keyManagers = keyManagerFactory.keyManagers
         val trustMgrFactory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm())
         trustMgrFactory.init(trustStore)
         val trustManagers = trustMgrFactory.trustManagers
-        context.init(keyManagers, trustManagers, SecureRandom())
+        context.init(keyManagers, trustManagers, newSecureRandom())
 
         val serverSocketFactory = context.serverSocketFactory
 
         val serverSocket = serverSocketFactory.createServerSocket(serverPort) as SSLServerSocket
-        val serverParams = SSLParameters(CIPHER_SUITES.toTypedArray(),
+        val serverParams = SSLParameters(ArtemisTcpTransport.CIPHER_SUITES.toTypedArray(),
                 arrayOf("TLSv1.2"))
         serverParams.wantClientAuth = true
         serverParams.needClientAuth = true
@@ -357,12 +376,42 @@ class ProtonWrapperTests {
         }
     }
 
+    @Test
+    fun `Message sent from AMQP to non-existent Artemis inbox is rejected and client disconnects`() {
+        val (server, artemisClient) = createArtemisServerAndClient()
+        val amqpClient = createClient()
+        var connected = false
+        amqpClient.onConnection.subscribe { change ->
+            connected = change.connected
+        }
+        val clientConnected = amqpClient.onConnection.toFuture()
+        amqpClient.start()
+        assertEquals(true, clientConnected.get().connected)
+        assertEquals(CHARLIE_NAME, CordaX500Name.build(clientConnected.get().remoteCert!!.subjectX500Principal))
+        val sendAddress = P2P_PREFIX + "Test"
+        val testData = "Test".toByteArray()
+        val testProperty = mutableMapOf<String, Any?>()
+        testProperty["TestProp"] = "1"
+        val message = amqpClient.createMessage(testData, sendAddress, CHARLIE_NAME.toString(), testProperty)
+        amqpClient.write(message)
+        assertEquals(MessageStatus.Rejected, message.onComplete.get())
+        assertEquals(false, connected)
+        amqpClient.stop()
+        artemisClient.stop()
+        server.stop()
+    }
+
     private fun createArtemisServerAndClient(maxMessageSize: Int = MAX_MESSAGE_SIZE): Pair<ArtemisMessagingServer, ArtemisMessagingClient> {
+        val baseDirectory = temporaryFolder.root.toPath() / "artemis"
+        val certificatesDirectory = baseDirectory / "certificates"
+        val signingCertificateStore = CertificateStoreStubs.Signing.withCertificatesDirectory(certificatesDirectory)
+        val p2pSslConfiguration = CertificateStoreStubs.P2P.withCertificatesDirectory(certificatesDirectory)
         val artemisConfig = rigorousMock<AbstractNodeConfiguration>().also {
-            doReturn(temporaryFolder.root.toPath() / "artemis").whenever(it).baseDirectory
+            doReturn(baseDirectory).whenever(it).baseDirectory
+            doReturn(certificatesDirectory).whenever(it).certificatesDirectory
             doReturn(CHARLIE_NAME).whenever(it).myLegalName
-            doReturn("trustpass").whenever(it).trustStorePassword
-            doReturn("cordacadevpass").whenever(it).keyStorePassword
+            doReturn(signingCertificateStore).whenever(it).signingCertificateStore
+            doReturn(p2pSslConfiguration).whenever(it).p2pSslOptions
             doReturn(NetworkHostAndPort("0.0.0.0", artemisPort)).whenever(it).p2pAddress
             doReturn(null).whenever(it).jmxMonitoringHttpPort
             doReturn(true).whenever(it).crlCheckSoftFail
@@ -370,84 +419,102 @@ class ProtonWrapperTests {
         artemisConfig.configureWithDevSSLCertificate()
 
         val server = ArtemisMessagingServer(artemisConfig, NetworkHostAndPort("0.0.0.0", artemisPort), maxMessageSize)
-        val client = ArtemisMessagingClient(artemisConfig, NetworkHostAndPort("localhost", artemisPort), maxMessageSize)
+        val client = ArtemisMessagingClient(artemisConfig.p2pSslOptions, NetworkHostAndPort("localhost", artemisPort), maxMessageSize)
         server.start()
         client.start()
         return Pair(server, client)
     }
 
     private fun createClient(maxMessageSize: Int = MAX_MESSAGE_SIZE): AMQPClient {
+        val baseDirectory = temporaryFolder.root.toPath() / "client"
+        val certificatesDirectory = baseDirectory / "certificates"
+        val signingCertificateStore = CertificateStoreStubs.Signing.withCertificatesDirectory(certificatesDirectory)
+        val p2pSslConfiguration = CertificateStoreStubs.P2P.withCertificatesDirectory(certificatesDirectory)
         val clientConfig = rigorousMock<AbstractNodeConfiguration>().also {
-            doReturn(temporaryFolder.root.toPath() / "client").whenever(it).baseDirectory
+            doReturn(baseDirectory).whenever(it).baseDirectory
+            doReturn(certificatesDirectory).whenever(it).certificatesDirectory
             doReturn(BOB_NAME).whenever(it).myLegalName
-            doReturn("trustpass").whenever(it).trustStorePassword
-            doReturn("cordacadevpass").whenever(it).keyStorePassword
+            doReturn(signingCertificateStore).whenever(it).signingCertificateStore
+            doReturn(p2pSslConfiguration).whenever(it).p2pSslOptions
             doReturn(true).whenever(it).crlCheckSoftFail
         }
         clientConfig.configureWithDevSSLCertificate()
 
-        val clientTruststore = clientConfig.loadTrustStore().internal
-        val clientKeystore = clientConfig.loadSslKeyStore().internal
+        val clientTruststore = clientConfig.p2pSslOptions.trustStore.get()
+        val clientKeystore = clientConfig.p2pSslOptions.keyStore.get()
+        val amqpConfig = object : AMQPConfiguration {
+            override val keyStore = clientKeystore
+            override val trustStore = clientTruststore
+            override val trace: Boolean = true
+            override val maxMessageSize: Int = maxMessageSize
+        }
         return AMQPClient(
                 listOf(NetworkHostAndPort("localhost", serverPort),
                         NetworkHostAndPort("localhost", serverPort2),
                         NetworkHostAndPort("localhost", artemisPort)),
                 setOf(ALICE_NAME, CHARLIE_NAME),
-                PEER_USER,
-                PEER_USER,
-                clientKeystore,
-                clientConfig.keyStorePassword,
-                clientTruststore,
-                true,
-                maxMessageSize = maxMessageSize)
+                amqpConfig)
     }
 
     private fun createSharedThreadsClient(sharedEventGroup: EventLoopGroup, id: Int, maxMessageSize: Int = MAX_MESSAGE_SIZE): AMQPClient {
+        val baseDirectory = temporaryFolder.root.toPath() / "client_%$id"
+        val certificatesDirectory = baseDirectory / "certificates"
+        val signingCertificateStore = CertificateStoreStubs.Signing.withCertificatesDirectory(certificatesDirectory)
+        val p2pSslConfiguration = CertificateStoreStubs.P2P.withCertificatesDirectory(certificatesDirectory)
         val clientConfig = rigorousMock<AbstractNodeConfiguration>().also {
-            doReturn(temporaryFolder.root.toPath() / "client_%$id").whenever(it).baseDirectory
+            doReturn(baseDirectory).whenever(it).baseDirectory
+            doReturn(certificatesDirectory).whenever(it).certificatesDirectory
             doReturn(CordaX500Name(null, "client $id", "Corda", "London", null, "GB")).whenever(it).myLegalName
-            doReturn("trustpass").whenever(it).trustStorePassword
-            doReturn("cordacadevpass").whenever(it).keyStorePassword
+            doReturn(signingCertificateStore).whenever(it).signingCertificateStore
+            doReturn(p2pSslConfiguration).whenever(it).p2pSslOptions
             doReturn(true).whenever(it).crlCheckSoftFail
         }
         clientConfig.configureWithDevSSLCertificate()
 
-        val clientTruststore = clientConfig.loadTrustStore().internal
-        val clientKeystore = clientConfig.loadSslKeyStore().internal
+        val clientTruststore = clientConfig.p2pSslOptions.trustStore.get()
+        val clientKeystore = clientConfig.p2pSslOptions.keyStore.get()
+        val amqpConfig = object : AMQPConfiguration {
+            override val keyStore = clientKeystore
+            override val trustStore = clientTruststore
+            override val trace: Boolean = true
+            override val maxMessageSize: Int = maxMessageSize
+        }
         return AMQPClient(
                 listOf(NetworkHostAndPort("localhost", serverPort)),
                 setOf(ALICE_NAME),
-                PEER_USER,
-                PEER_USER,
-                clientKeystore,
-                clientConfig.keyStorePassword,
-                clientTruststore,
-                true,
-                sharedThreadPool = sharedEventGroup,
-                maxMessageSize = maxMessageSize)
+                amqpConfig,
+                sharedThreadPool = sharedEventGroup)
     }
 
-    private fun createServer(port: Int, name: CordaX500Name = ALICE_NAME, maxMessageSize: Int = MAX_MESSAGE_SIZE): AMQPServer {
+    private fun createServer(port: Int,
+                             name: CordaX500Name = ALICE_NAME,
+                             maxMessageSize: Int = MAX_MESSAGE_SIZE,
+                             crlCheckSoftFail: Boolean = true): AMQPServer {
+        val baseDirectory = temporaryFolder.root.toPath() / "server"
+        val certificatesDirectory = baseDirectory / "certificates"
+        val signingCertificateStore = CertificateStoreStubs.Signing.withCertificatesDirectory(certificatesDirectory)
+        val p2pSslConfiguration = CertificateStoreStubs.P2P.withCertificatesDirectory(certificatesDirectory)
         val serverConfig = rigorousMock<AbstractNodeConfiguration>().also {
-            doReturn(temporaryFolder.root.toPath() / "server").whenever(it).baseDirectory
+            doReturn(baseDirectory).whenever(it).baseDirectory
+            doReturn(certificatesDirectory).whenever(it).certificatesDirectory
             doReturn(name).whenever(it).myLegalName
-            doReturn("trustpass").whenever(it).trustStorePassword
-            doReturn("cordacadevpass").whenever(it).keyStorePassword
-            doReturn(true).whenever(it).crlCheckSoftFail
+            doReturn(signingCertificateStore).whenever(it).signingCertificateStore
+            doReturn(p2pSslConfiguration).whenever(it).p2pSslOptions
+            doReturn(crlCheckSoftFail).whenever(it).crlCheckSoftFail
         }
         serverConfig.configureWithDevSSLCertificate()
 
-        val serverTruststore = serverConfig.loadTrustStore().internal
-        val serverKeystore = serverConfig.loadSslKeyStore().internal
+        val serverTruststore = serverConfig.p2pSslOptions.trustStore.get()
+        val serverKeystore = serverConfig.p2pSslOptions.keyStore.get()
+        val amqpConfig = object : AMQPConfiguration {
+            override val keyStore = serverKeystore
+            override val trustStore = serverTruststore
+            override val trace: Boolean = true
+            override val maxMessageSize: Int = maxMessageSize
+        }
         return AMQPServer(
                 "0.0.0.0",
                 port,
-                PEER_USER,
-                PEER_USER,
-                serverKeystore,
-                serverConfig.keyStorePassword,
-                serverTruststore,
-                crlCheckSoftFail = true,
-                maxMessageSize = maxMessageSize)
+                amqpConfig)
     }
 }

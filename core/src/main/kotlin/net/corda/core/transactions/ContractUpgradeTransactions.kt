@@ -1,5 +1,6 @@
 package net.corda.core.transactions
 
+import net.corda.core.KeepForDJVM
 import net.corda.core.contracts.*
 import net.corda.core.crypto.SecureHash
 import net.corda.core.crypto.TransactionSignature
@@ -22,6 +23,7 @@ import java.security.PublicKey
 // TODO: check transaction size is within limits
 
 /** A special transaction for upgrading the contract of a state. */
+@KeepForDJVM
 @CordaSerializable
 data class ContractUpgradeWireTransaction(
         /**
@@ -53,8 +55,11 @@ data class ContractUpgradeWireTransaction(
         get() = throw UnsupportedOperationException("ContractUpgradeWireTransaction does not contain output states, " +
                 "outputs can only be obtained from a resolved ContractUpgradeLedgerTransaction")
 
+    /** ContractUpgradeWireTransactions should not contain reference input states. */
+    override val references: List<StateRef> get() = emptyList()
+
     override val id: SecureHash by lazy {
-        val componentHashes =serializedComponents.mapIndexed { index, component ->
+        val componentHashes = serializedComponents.mapIndexed { index, component ->
             componentHash(nonces[index], component)
         }
         combinedHash(componentHashes)
@@ -110,6 +115,7 @@ data class ContractUpgradeWireTransaction(
  * is no flexibility on what parts of the transaction to reveal – the inputs and notary field are always visible and the
  * rest of the transaction is always hidden. Its only purpose is to hide transaction data when using a non-validating notary.
  */
+@KeepForDJVM
 @CordaSerializable
 data class ContractUpgradeFilteredTransaction(
         /** Transaction components that are exposed. */
@@ -142,6 +148,7 @@ data class ContractUpgradeFilteredTransaction(
         combinedHash(hashList)
     }
     override val outputs: List<TransactionState<ContractState>> get() = emptyList()
+    override val references: List<StateRef> get() = emptyList()
 
     /** Contains the serialized component and the associated nonce for computing the transaction id. */
     @CordaSerializable
@@ -158,6 +165,7 @@ data class ContractUpgradeFilteredTransaction(
  * In contrast with a regular transaction, signatures are checked against the signers specified by input states'
  * *participants* fields, so full resolution is needed for signature verification.
  */
+@KeepForDJVM
 data class ContractUpgradeLedgerTransaction(
         override val inputs: List<StateAndRef<ContractState>>,
         override val notary: Party,
@@ -169,6 +177,8 @@ data class ContractUpgradeLedgerTransaction(
         override val sigs: List<TransactionSignature>,
         private val networkParameters: NetworkParameters
 ) : FullTransaction(), TransactionWithSignatures {
+    /** ContractUpgradeLEdgerTransactions do not contain reference input states. */
+    override val references: List<StateAndRef<ContractState>> = emptyList()
     /** The legacy contract class name is determined by the first input state. */
     private val legacyContractClassName = inputs.first().state.contract
     private val upgradedContract: UpgradedContract<ContractState, *> = loadUpgradedContract()

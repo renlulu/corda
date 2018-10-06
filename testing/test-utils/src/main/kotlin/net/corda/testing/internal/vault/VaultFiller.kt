@@ -17,6 +17,8 @@ import net.corda.finance.contracts.DealState
 import net.corda.finance.contracts.asset.Cash
 import net.corda.finance.contracts.asset.Obligation
 import net.corda.finance.contracts.asset.OnLedgerAsset
+import net.corda.testing.contracts.DummyContract
+import net.corda.testing.contracts.DummyState
 import net.corda.testing.core.*
 import net.corda.testing.internal.chooseIdentity
 import net.corda.testing.internal.chooseIdentityAndCert
@@ -96,10 +98,12 @@ class VaultFiller @JvmOverloads constructor(
     fun fillWithSomeTestLinearStates(numberToCreate: Int,
                                      externalId: String? = null,
                                      participants: List<AbstractParty> = emptyList(),
+                                     uniqueIdentifier: UniqueIdentifier? = null,
                                      linearString: String = "",
                                      linearNumber: Long = 0L,
                                      linearBoolean: Boolean = false,
-                                     linearTimestamp: Instant = now()): Vault<LinearState> {
+                                     linearTimestamp: Instant = now(),
+                                     constraint: AttachmentConstraint = AutomaticHashConstraint): Vault<LinearState> {
         val myKey: PublicKey = services.myInfo.chooseIdentity().owningKey
         val me = AnonymousParty(myKey)
         val issuerKey = defaultNotary.keyPair
@@ -108,12 +112,13 @@ class VaultFiller @JvmOverloads constructor(
             // Issue a Linear state
             val dummyIssue = TransactionBuilder(notary = defaultNotary.party).apply {
                 addOutputState(DummyLinearContract.State(
-                        linearId = UniqueIdentifier(externalId),
+                        linearId = uniqueIdentifier ?: UniqueIdentifier(externalId),
                         participants = participants.plus(me),
                         linearString = linearString,
                         linearNumber = linearNumber,
                         linearBoolean = linearBoolean,
-                        linearTimestamp = linearTimestamp), DUMMY_LINEAR_CONTRACT_PROGRAM_ID)
+                        linearTimestamp = linearTimestamp), DUMMY_LINEAR_CONTRACT_PROGRAM_ID,
+                        constraint = constraint)
                 addCommand(dummyCommand())
             }
             return@map services.signInitialTransaction(dummyIssue).withAdditionalSignature(issuerKey, signatureMetadata)
@@ -124,6 +129,42 @@ class VaultFiller @JvmOverloads constructor(
             stx.tx.outputs.indices.map { i -> stx.tx.outRef<LinearState>(i) }
         }
 
+        return Vault(states)
+    }
+
+    @JvmOverloads
+    fun fillWithSomeTestLinearAndDealStates(numberToCreate: Int,
+                                     externalId: String? = null,
+                                     participants: List<AbstractParty> = emptyList(),
+                                     linearString: String = "",
+                                     linearNumber: Long = 0L,
+                                     linearBoolean: Boolean = false,
+                                     linearTimestamp: Instant = now()): Vault<LinearState> {
+        val myKey: PublicKey = services.myInfo.chooseIdentity().owningKey
+        val me = AnonymousParty(myKey)
+        val issuerKey = defaultNotary.keyPair
+        val signatureMetadata = SignatureMetadata(services.myInfo.platformVersion, Crypto.findSignatureScheme(issuerKey.public).schemeNumberID)
+        val transactions: List<SignedTransaction> = (1..numberToCreate).map {
+            val dummyIssue = TransactionBuilder(notary = defaultNotary.party).apply {
+                // Issue a Linear state
+                addOutputState(DummyLinearContract.State(
+                        linearId = UniqueIdentifier(externalId),
+                        participants = participants.plus(me),
+                        linearString = linearString,
+                        linearNumber = linearNumber,
+                        linearBoolean = linearBoolean,
+                        linearTimestamp = linearTimestamp), DUMMY_LINEAR_CONTRACT_PROGRAM_ID)
+                // Issue a Deal state
+                addOutputState(DummyDealContract.State(ref = "test ref", participants = participants.plus(me)), DUMMY_DEAL_PROGRAM_ID)
+                addCommand(dummyCommand())
+            }
+            return@map services.signInitialTransaction(dummyIssue).withAdditionalSignature(issuerKey, signatureMetadata)
+        }
+        services.recordTransactions(transactions)
+        // Get all the StateAndRefs of all the generated transactions.
+        val states = transactions.flatMap { stx ->
+            stx.tx.outputs.indices.map { i -> stx.tx.outRef<LinearState>(i) }
+        }
         return Vault(states)
     }
 
@@ -167,6 +208,22 @@ class VaultFiller @JvmOverloads constructor(
         return Vault(states)
     }
 
+    /**
+     * Records a dummy state in the Vault (useful for creating random states when testing vault queries)
+     */
+    fun fillWithDummyState() : Vault<DummyState> {
+        val outputState = TransactionState(
+                data = DummyState(Random().nextInt(), participants = listOf(services.myInfo.singleIdentity())),
+                contract = DummyContract.PROGRAM_ID,
+                notary = defaultNotary.party
+        )
+        val builder = TransactionBuilder()
+                .addOutputState(outputState)
+                .addCommand(DummyCommandData, defaultNotary.party.owningKey)
+        val stxn = services.signInitialTransaction(builder)
+        services.recordTransactions(stxn)
+        return Vault(setOf(stxn.tx.outRef(0)))
+    }
 
     /**
      * Puts together an issuance transaction for the specified amount that starts out being owned by the given pubkey.

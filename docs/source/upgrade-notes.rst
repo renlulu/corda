@@ -9,29 +9,48 @@ first public Beta (:ref:`Milestone 12 <changelog_m12>`), to :ref:`V1.0 <changelo
 
 General rules
 -------------
-Always remember to update the version identifiers in your project gradle file:
+* Always remember to update the version identifiers in your project gradle file:
 
 .. sourcecode:: shell
 
-    ext.corda_release_version = '1.0.0'
-    ext.corda_gradle_plugins_version = '1.0.0'
+    ext.corda_release_version = 'x.y.0'
+    ext.corda_gradle_plugins_version = 'x.y.0'
 
-It may be necessary to update the version of major dependencies:
+* It may also be necessary to update the version of major dependencies:
 
 .. sourcecode:: shell
 
-    ext.kotlin_version = '1.1.4'
-    ext.quasar_version = '0.7.9'
+    ext.kotlin_version = 'x.y.z'
+    ext.quasar_version = 'x.y.z'
 
-Please consult the relevant release notes of the release in question. If not specified, you may assume the
-versions you are currently using are still in force.
+* Please consult the relevant release notes of the release in question. If not specified, you may assume the
+  versions you are currently using are still in force
+  
+  * We also strongly recommend cross referencing with the :doc:`changelog` to confirm changes
 
-We also strongly recommend cross referencing with the :doc:`changelog` to confirm changes.
+* To run database upgrades against H2, you'll need to connect to the node's database without starting the node. You can 
+  do this by connecting directly to the node's ``persistence.mv.db`` file. See :ref:`h2_relative_path`
 
 UNRELEASED
 ----------
 
 <<< Fill this in >>>
+
+* Database upgrade - Change the type of the ``checkpoint_value``.
+This will address the issue that the `vacuum` function is unable to clean up deleted checkpoints as they are still referenced from the ``pg_shdepend`` table.
+
+For Postgres:
+
+  .. sourcecode:: sql
+
+    ALTER TABLE node_checkpoints ALTER COLUMN checkpoint_value set data type bytea;
+
+For H2:
+
+  .. sourcecode:: sql
+
+    ALTER TABLE node_checkpoints ALTER COLUMN checkpoint_value set data type VARBINARY(33554432);
+
 
 * API change: ``net.corda.core.schemas.PersistentStateRef`` fields (``index`` and ``txId``) incorrectly marked as nullable are now non-nullable,
   :doc:`changelog` contains the explanation.
@@ -67,11 +86,40 @@ UNRELEASED
   No action is needed for default node tables as ``PersistentStateRef`` is used as Primary Key only and the backing columns are automatically not nullable
   or custom Cordapp entities using ``PersistentStateRef`` as Primary Key.
 
-* H2 database upgrade - the table with a typo has been change, for each database instance and schema run the following SQL statement:
+v3.1 to v3.2
+------------
 
-    ALTER TABLE [schema].NODE_ATTCHMENTS_CONTRACTS RENAME TO NODE_ATTACHMENTS_CONTRACTS;
+Gradle Plugin Version
+^^^^^^^^^^^^^^^^^^^^^
 
-  Schema is optional, run SQL when the node is not running.
+You will need to update the ``corda_release_version`` identifier in your project gradle file.
+
+.. sourcecode:: shell
+
+  ext.corda_release_version = '3.2-corda'
+
+Database schema changes
+^^^^^^^^^^^^^^^^^^^^^^^
+
+* Database upgrade - a typo has been corrected in the ``NODE_ATTACHMENTS_CONTRACTS`` table name.
+  When upgrading from versions 3.0 or 3.1, run the following command:
+
+  .. sourcecode:: sql
+
+     ALTER TABLE [schema].NODE_ATTCHMENTS_CONTRACTS RENAME TO NODE_ATTACHMENTS_CONTRACTS;
+
+  .. note::
+    Schema name is optional, run SQL when the node is not running.
+
+* Postgres database upgrade - Change the type of the ``checkpoint_value`` column to ``bytea``.
+  This will address the issue that the `vacuum` function is unable to clean up deleted checkpoints as they are still referenced from the ``pg_shdepend`` table.
+
+  .. sourcecode:: sql
+
+    ALTER TABLE node_checkpoints ALTER COLUMN checkpoint_value set data type bytea using null;
+
+  .. important::
+     The Corda node will fail on startup if the database was not updated with the above commands.
 
 v3.0 to v3.1
 ------------
@@ -117,7 +165,7 @@ With the re-designed network map service the following changes need to be made:
 * The network map is no longer provided by a node and thus the ``networkMapService`` config is ignored. Instead the
   network map is either provided by the compatibility zone (CZ) operator (who operates the doorman) and available
   using the ``compatibilityZoneURL`` config, or is provided using signed node info files which are copied locally.
-  See :doc:`network-map` for more details, and :doc:`setting-up-a-corda-network` on how to use the network
+  See :doc:`network-map` for more details, and :doc:`network-bootstrapper` on how to use the network
   bootstrapper for deploying a local network.
 
 * Configuration for a notary has been simplified. ``extraAdvertisedServiceIds``, ``notaryNodeAddress``, ``notaryClusterAddresses``
@@ -227,6 +275,23 @@ Also, the property `rpcPort` is now deprecated, so it would be preferable to sub
 
 Equivalent changes should be performed on classes extending ``CordformDefinition``.
 
+* Certificate Revocation List (CRL) support:
+
+    The newly added feature of certificate revocation (see :doc:`certificate-revocation`) introduces few changes to the node configuration.
+    In the configuration file it is required to explicitly specify what mode of the CRL check the node should apply. For that purpose the `crlCheckSoftFail`
+    parameter is now expected to be set explicitly in the node's SSL configuration.
+    Setting the `crlCheckSoftFail` to true, relaxes the CRL checking policy. In this mode, the SSL communication
+    will fail only when the certificate revocation status can be checked and the certificate is revoked. Otherwise it will succeed.
+    If `crlCheckSoftFail` is false, then the SSL failure will occur also if the certificate revocation status cannot be checked (e.g. due to a network failure).
+
+    Older versions of Corda do not have CRL distribution points embedded in the SSL certificates.
+    As such, in order to be able to reuse node and SSL certificates generated in those versions of Corda, the `crlCheckSoftFail` needs
+    to be set to true. This is required due to the fact that node and SSL certificates produced in the older versions of Corda miss attributes
+    required for the CRL check process. In this mode, if the CRL is unavailable for whatever reason, the check will still pass and the SSL connection will be allowed.
+
+    .. note:: The support for the mitigating this issue and being able to use the `strict` mode (i.e. with `crlCheckSoftFail` = false)
+    of the CRL checking with the certificates generated in the previous versions of Corda is going to be added in the near future.
+
 Testing
 ^^^^^^^
 
@@ -273,7 +338,7 @@ Testing
 * Starting a flow can now be done directly from a node object. Change calls of the form ``node.getServices().startFlow(...)``
   to ``node.startFlow(...)``
 
-* Similarly a tranaction can be executed directly from a node object. Change calls of the form ``node.getDatabase().transaction({ it -> ... })``
+* Similarly a transaction can be executed directly from a node object. Change calls of the form ``node.getDatabase().transaction({ it -> ... })``
   to ``node.transaction({() -> ... })``
 
 * ``startFlow`` now returns a ``CordaFuture``, there is no need to call ``startFlow(...).getResultantFuture()``
@@ -391,7 +456,7 @@ Flow framework
 
   * ``FlowLogic.send``/``FlowLogic.receive``/``FlowLogic.sendAndReceive`` has been replaced by ``FlowSession.send``/
     ``FlowSession.receive``/``FlowSession.sendAndReceive``. The replacement functions do not take a destination
-    parameter, as this is defined implictly by the session used
+    parameter, as this is defined implicitly by the session used
 
   * Initiated flows now take in a ``FlowSession`` instead of ``Party`` in their constructor. If you need to access the
     counterparty identity, it is in the ``counterparty`` property of the flow session

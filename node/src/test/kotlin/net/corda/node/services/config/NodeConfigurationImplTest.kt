@@ -1,25 +1,21 @@
 package net.corda.node.services.config
 
-import com.typesafe.config.Config
-import com.typesafe.config.ConfigException
-import com.typesafe.config.ConfigFactory
-import com.typesafe.config.ConfigParseOptions
-import com.typesafe.config.ConfigValueFactory
+import com.typesafe.config.*
 import net.corda.core.internal.toPath
 import net.corda.core.utilities.NetworkHostAndPort
 import net.corda.core.utilities.seconds
+import net.corda.nodeapi.internal.config.getBooleanCaseInsensitive
 import net.corda.testing.core.ALICE_NAME
 import net.corda.testing.node.MockServices.Companion.makeTestDataSourceProperties
 import net.corda.tools.shell.SSHDConfiguration
-import org.assertj.core.api.Assertions.assertThat
-import org.assertj.core.api.Assertions.assertThatCode
-import org.assertj.core.api.Assertions.assertThatThrownBy
-import org.junit.Assert.assertNotNull
+import org.assertj.core.api.Assertions.*
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Test
 import java.net.URI
 import java.net.URL
 import java.nio.file.Paths
+import javax.security.auth.x500.X500Principal
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -38,13 +34,6 @@ class NodeConfigurationImplTest {
         val configValidationResult = configTlsCertCrlOptions(null, "C=US, L=New York, OU=Corda, O=R3 HoldCo LLC, CN=Corda Root CA").validate()
         assertTrue { configValidationResult.isNotEmpty() }
         assertThat(configValidationResult.first()).contains("tlsCertCrlDistPoint needs to be specified when tlsCertCrlIssuer is not NULL")
-    }
-
-    @Test
-    fun `tlsCertCrlIssuer validation fails when misconfigured`() {
-        val configValidationResult = configTlsCertCrlOptions(URL("http://test.com/crl"), "Corda Root CA").validate()
-        assertTrue { configValidationResult.isNotEmpty() }
-        assertThat(configValidationResult.first()).contains("Error when parsing tlsCertCrlIssuer:")
     }
 
     @Test
@@ -79,16 +68,16 @@ class NodeConfigurationImplTest {
         val os = System.getProperty("os.name")
 
         setSystemOs("Windows 98")
-        assertTrue(getConfig("test-config-empty.conf").getBoolean("devMode"))
+        assertTrue(getConfig("test-config-empty.conf").getBooleanCaseInsensitive("devMode"))
 
         setSystemOs("Mac Sierra")
-        assertTrue(getConfig("test-config-empty.conf").getBoolean("devMode"))
+        assertTrue(getConfig("test-config-empty.conf").getBooleanCaseInsensitive("devMode"))
 
         setSystemOs("Windows server 2008")
-        assertFalse(getConfig("test-config-empty.conf").getBoolean("devMode"))
+        assertFalse(getConfig("test-config-empty.conf").getBooleanCaseInsensitive("devMode"))
 
         setSystemOs("Linux")
-        assertFalse(getConfig("test-config-empty.conf").getBoolean("devMode"))
+        assertFalse(getConfig("test-config-empty.conf").getBooleanCaseInsensitive("devMode"))
 
         setSystemOs(os)
     }
@@ -99,22 +88,22 @@ class NodeConfigurationImplTest {
 
     @Test
     fun `Dev mode is read from the config over the autodetect logic`() {
-        assertTrue(getConfig("test-config-DevMode.conf").getBoolean("devMode"))
-        assertFalse(getConfig("test-config-noDevMode.conf").getBoolean("devMode"))
+        assertTrue(getConfig("test-config-DevMode.conf").getBooleanCaseInsensitive("devMode"))
+        assertFalse(getConfig("test-config-noDevMode.conf").getBooleanCaseInsensitive("devMode"))
     }
 
     @Test
     fun `Dev mode is true if overriden`() {
-        assertTrue(getConfig("test-config-DevMode.conf", ConfigFactory.parseMap(mapOf("devMode" to true))).getBoolean("devMode"))
-        assertTrue(getConfig("test-config-noDevMode.conf", ConfigFactory.parseMap(mapOf("devMode" to true))).getBoolean("devMode"))
-        assertTrue(getConfig("test-config-empty.conf", ConfigFactory.parseMap(mapOf("devMode" to true))).getBoolean("devMode"))
+        assertTrue(getConfig("test-config-DevMode.conf", ConfigFactory.parseMap(mapOf("devMode" to true))).getBooleanCaseInsensitive("devMode"))
+        assertTrue(getConfig("test-config-noDevMode.conf", ConfigFactory.parseMap(mapOf("devMode" to true))).getBooleanCaseInsensitive("devMode"))
+        assertTrue(getConfig("test-config-empty.conf", ConfigFactory.parseMap(mapOf("devMode" to true))).getBooleanCaseInsensitive("devMode"))
     }
 
     @Test
     fun `Dev mode is false if overriden`() {
-        assertFalse(getConfig("test-config-DevMode.conf", ConfigFactory.parseMap(mapOf("devMode" to false))).getBoolean("devMode"))
-        assertFalse(getConfig("test-config-noDevMode.conf", ConfigFactory.parseMap(mapOf("devMode" to false))).getBoolean("devMode"))
-        assertFalse(getConfig("test-config-empty.conf", ConfigFactory.parseMap(mapOf("devMode" to false))).getBoolean("devMode"))
+        assertFalse(getConfig("test-config-DevMode.conf", ConfigFactory.parseMap(mapOf("devMode" to false))).getBooleanCaseInsensitive("devMode"))
+        assertFalse(getConfig("test-config-noDevMode.conf", ConfigFactory.parseMap(mapOf("devMode" to false))).getBooleanCaseInsensitive("devMode"))
+        assertFalse(getConfig("test-config-empty.conf", ConfigFactory.parseMap(mapOf("devMode" to false))).getBooleanCaseInsensitive("devMode"))
     }
 
     private fun getConfig(cfgName: String, overrides: Config = ConfigFactory.empty()): Config {
@@ -136,6 +125,17 @@ class NodeConfigurationImplTest {
         val errors = configuration.validate()
 
         assertThat(errors).hasOnlyOneElementSatisfying { error -> error.contains("compatibilityZoneURL") && error.contains("devMode") }
+    }
+
+    @Test
+    fun `validation succeeds when compatibilityZoneURL is present and devMode is true and allowCompatibilityZoneURL is set`() {
+        val configuration = testConfiguration.copy(
+                devMode = true,
+                compatibilityZoneURL = URL("https://r3.com"),
+                devModeOptions = DevModeOptions(allowCompatibilityZone = true))
+
+        val errors = configuration.validate()
+        assertThat(errors).isEmpty()
     }
 
     @Test
@@ -187,6 +187,16 @@ class NodeConfigurationImplTest {
     }
 
     @Test
+    fun `missing rpcSettings_adminAddress cause a graceful failure`() {
+        var rawConfig = ConfigFactory.parseResources("working-config.conf", ConfigParseOptions.defaults().setAllowMissing(false))
+        rawConfig = rawConfig.withoutPath("rpcSettings.adminAddress")
+
+        val config = rawConfig.parseAsNodeConfiguration()
+
+        assertThat(config.validate().filter { it.contains("rpcSettings.adminAddress") }).isNotEmpty
+    }
+
+    @Test
     fun `compatiilityZoneURL populates NetworkServices`() {
         val compatibilityZoneURL = URI.create("https://r3.com").toURL()
         val configuration = testConfiguration.copy(
@@ -198,12 +208,35 @@ class NodeConfigurationImplTest {
         assertEquals(compatibilityZoneURL, configuration.networkServices!!.networkMapURL)
     }
 
+    @Test
+    fun `jmxReporterType is null and defaults to Jokolia`() {
+        var rawConfig = getConfig("working-config.conf", ConfigFactory.parseMap(mapOf("devMode" to true)))
+        val nodeConfig = rawConfig.parseAsNodeConfiguration()
+        assertTrue(JmxReporterType.JOLOKIA.toString() == nodeConfig.jmxReporterType.toString())
+    }
+
+    @Test
+    fun `jmxReporterType is not null and is set to New Relic`() {
+        var rawConfig = getConfig("working-config.conf", ConfigFactory.parseMap(mapOf("devMode" to true)))
+        rawConfig = rawConfig.withValue("jmxReporterType", ConfigValueFactory.fromAnyRef("NEW_RELIC"))
+        val nodeConfig = rawConfig.parseAsNodeConfiguration()
+        assertTrue(JmxReporterType.NEW_RELIC.toString() == nodeConfig.jmxReporterType.toString())
+    }
+
+    @Test
+    fun `jmxReporterType is not null and set to Jokolia`() {
+        var rawConfig = getConfig("working-config.conf", ConfigFactory.parseMap(mapOf("devMode" to true)))
+        rawConfig = rawConfig.withValue("jmxReporterType", ConfigValueFactory.fromAnyRef("JOLOKIA"))
+        val nodeConfig = rawConfig.parseAsNodeConfiguration()
+        assertTrue(JmxReporterType.JOLOKIA.toString() == nodeConfig.jmxReporterType.toString())
+    }
+
     private fun configDebugOptions(devMode: Boolean, devModeOptions: DevModeOptions?): NodeConfiguration {
         return testConfiguration.copy(devMode = devMode, devModeOptions = devModeOptions)
     }
 
     private fun configTlsCertCrlOptions(tlsCertCrlDistPoint: URL?, tlsCertCrlIssuer: String?, crlCheckSoftFail: Boolean = true): NodeConfiguration {
-        return testConfiguration.copy(tlsCertCrlDistPoint = tlsCertCrlDistPoint, tlsCertCrlIssuer = tlsCertCrlIssuer, crlCheckSoftFail = crlCheckSoftFail)
+        return testConfiguration.copy(tlsCertCrlDistPoint = tlsCertCrlDistPoint, tlsCertCrlIssuer = tlsCertCrlIssuer?.let { X500Principal(it) }, crlCheckSoftFail = crlCheckSoftFail)
     }
 
     private val testConfiguration = testNodeConfiguration()
@@ -229,7 +262,7 @@ class NodeConfigurationImplTest {
                 verifierType = VerifierType.InMemory,
                 p2pAddress = NetworkHostAndPort("localhost", 0),
                 messagingServerAddress = null,
-                p2pMessagingRetry = P2PMessagingRetryConfiguration(5.seconds, 3, 1.0),
+                flowTimeout = FlowTimeoutConfiguration(5.seconds, 3, 1.0),
                 notary = null,
                 devMode = true,
                 noLocalShell = false,

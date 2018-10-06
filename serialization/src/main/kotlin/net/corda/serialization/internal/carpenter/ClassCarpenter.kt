@@ -1,8 +1,13 @@
+@file:DeleteForDJVM
 package net.corda.serialization.internal.carpenter
 
 import com.google.common.base.MoreObjects
+import net.corda.core.DeleteForDJVM
+import net.corda.core.KeepForDJVM
 import net.corda.core.serialization.ClassWhitelist
 import net.corda.core.serialization.CordaSerializable
+import net.corda.core.utilities.contextLogger
+import net.corda.core.utilities.debug
 import org.objectweb.asm.ClassWriter
 import org.objectweb.asm.MethodVisitor
 import org.objectweb.asm.Opcodes.*
@@ -22,6 +27,7 @@ interface SimpleFieldAccess {
     operator fun get(name: String): Any?
 }
 
+@DeleteForDJVM
 class CarpenterClassLoader(parentClassLoader: ClassLoader = Thread.currentThread().contextClassLoader) :
         ClassLoader(parentClassLoader) {
     fun load(name: String, bytes: ByteArray): Class<*> = defineClass(name, bytes, 0, bytes.size)
@@ -46,6 +52,7 @@ private val moreObjects: String = Type.getInternalName(MoreObjects::class.java)
 private val toStringHelper: String = Type.getInternalName(MoreObjects.ToStringHelper::class.java)
 
 // Allow us to create alternative ClassCarpenters.
+@KeepForDJVM
 interface ClassCarpenter {
     val whitelist: ClassWhitelist
     val classloader: ClassLoader
@@ -96,9 +103,11 @@ interface ClassCarpenter {
  *
  * Equals/hashCode methods are not yet supported.
  */
-class ClassCarpenterImpl(cl: ClassLoader, override val whitelist: ClassWhitelist) : ClassCarpenter {
-    constructor(whitelist: ClassWhitelist) : this(Thread.currentThread().contextClassLoader, whitelist)
-
+@DeleteForDJVM
+class ClassCarpenterImpl @JvmOverloads constructor (override val whitelist: ClassWhitelist,
+                         cl: ClassLoader = Thread.currentThread().contextClassLoader,
+                         private val lenient: Boolean = false
+) : ClassCarpenter {
     // TODO: Generics.
     // TODO: Sandbox the generated code when a security manager is in use.
     // TODO: Generate equals/hashCode.
@@ -121,8 +130,8 @@ class ClassCarpenterImpl(cl: ClassLoader, override val whitelist: ClassWhitelist
      */
     override fun build(schema: Schema): Class<*> {
         validateSchema(schema)
-        // Walk up the inheritance hierarchy and then start walking back down once we either hit the top, or
-        // find a class we haven't generated yet.
+        // Walk up the inheritance hierarchy until we hit either the top or a class we've already generated,
+        // then walk back down it generating classes.
         val hierarchy = ArrayList<Schema>()
         hierarchy += schema
         var cursor = schema.superclass
@@ -297,16 +306,16 @@ class ClassCarpenterImpl(cl: ClassLoader, override val whitelist: ClassWhitelist
             visitInsn(DUP)
 
             var idx = 0
-            schema.fields.forEach {
+            schema.fields.keys.forEach { key ->
                 visitInsn(DUP)
                 visitIntInsn(BIPUSH, idx)
                 visitTypeInsn(NEW, schema.jvmName)
                 visitInsn(DUP)
-                visitLdcInsn(it.key)
+                visitLdcInsn(key)
                 visitIntInsn(BIPUSH, idx++)
                 visitMethodInsn(INVOKESPECIAL, schema.jvmName, "<init>", "(L$jlString;I)V", false)
                 visitInsn(DUP)
-                visitFieldInsn(PUTSTATIC, schema.jvmName, it.key, "L${schema.jvmName};")
+                visitFieldInsn(PUTSTATIC, schema.jvmName, key, "L${schema.jvmName};")
                 visitInsn(AASTORE)
             }
 
@@ -372,20 +381,18 @@ class ClassCarpenterImpl(cl: ClassLoader, override val whitelist: ClassWhitelist
             visitCode()
 
             // Calculate the super call.
-            val superclassFields = schema.superclass?.fieldsIncludingSuperclasses() ?: emptyMap()
             visitVarInsn(ALOAD, 0)
             val sc = schema.superclass
+            var slot = 1
             if (sc == null) {
                 visitMethodInsn(INVOKESPECIAL, jlObject, "<init>", "()V", false)
             } else {
-                var slot = 1
-                superclassFields.values.forEach { slot += load(slot, it) }
+                slot = sc.fieldsIncludingSuperclasses().values.fold(slot) { acc, field -> acc + load(acc, field) }
                 val superDesc = sc.descriptorsIncludingSuperclasses().values.joinToString("")
                 visitMethodInsn(INVOKESPECIAL, sc.jvmName, "<init>", "($superDesc)V", false)
             }
 
             // Assign the fields from parameters.
-            var slot = 1 + superclassFields.size
             for ((name, field) in schema.fields) {
                 (field as ClassField).nullTest(this, slot)
 
@@ -433,25 +440,36 @@ class ClassCarpenterImpl(cl: ClassLoader, override val whitelist: ClassWhitelist
         // actually called, which is a bit too dynamic for my tastes.
         val allFields = schema.fieldsIncludingSuperclasses()
         for (itf in schema.interfaces) {
-            itf.methods.forEach {
-                val fieldNameFromItf = when {
-                    it.name.startsWith("get") -> it.name.substring(3).decapitalize()
-                    else -> throw InterfaceMismatchNonGetterException(itf, it)
+            methodLoop@
+            for (method in itf.methods) {
+                val fieldNameFromItf = if (method.name.startsWith("get")) {
+                    method.name.substring(3).decapitalize()
+                } else if (lenient) {
+                    logger.debug { "Ignoring interface $method which is not a getter" }
+                    continue@methodLoop
+                } else {
+                    throw InterfaceMismatchNonGetterException(itf, method)
                 }
 
                 // If we're trying to carpent a class that prior to serialisation / deserialization
                 // was made by a carpenter then we can ignore this (it will implement a plain get
                 // method from SimpleFieldAccess).
-                if (fieldNameFromItf.isEmpty() && SimpleFieldAccess::class.java in schema.interfaces) return@forEach
+                if (fieldNameFromItf.isEmpty() && SimpleFieldAccess::class.java in schema.interfaces) continue@methodLoop
 
                 if ((schema is ClassSchema) and (fieldNameFromItf !in allFields)) {
-                    throw InterfaceMismatchMissingAMQPFieldException(itf, fieldNameFromItf)
+                    if (lenient) {
+                        logger.debug { "Ignoring interface $method which is not backed by an AMQP field" }
+                    } else {
+                        throw InterfaceMismatchMissingAMQPFieldException(itf, fieldNameFromItf)
+                    }
                 }
             }
         }
     }
 
     companion object {
+        private val logger = contextLogger()
+
         @JvmStatic
         @Suppress("UNUSED")
         fun getField(obj: Any, name: String): Any? = obj.javaClass.getMethod("get" + name.capitalize()).invoke(obj)

@@ -9,24 +9,16 @@ import net.corda.client.jackson.StringToMethodCallParser
 import net.corda.client.rpc.CordaRPCClientConfiguration
 import net.corda.client.rpc.CordaRPCConnection
 import net.corda.client.rpc.PermissionException
-import net.corda.client.rpc.internal.createCordaRPCClientWithInternalSslAndClassLoader
 import net.corda.client.rpc.internal.createCordaRPCClientWithSslAndClassLoader
 import net.corda.core.CordaException
 import net.corda.core.concurrent.CordaFuture
 import net.corda.core.contracts.UniqueIdentifier
 import net.corda.core.flows.FlowLogic
-import net.corda.core.internal.Emoji
+import net.corda.core.internal.*
 import net.corda.core.internal.concurrent.doneFuture
 import net.corda.core.internal.concurrent.openFuture
-import net.corda.core.internal.createDirectories
-import net.corda.core.internal.div
-import net.corda.core.internal.rootCause
-import net.corda.core.internal.uncheckedCast
-import net.corda.core.messaging.CordaRPCOps
-import net.corda.core.messaging.DataFeed
-import net.corda.core.messaging.FlowProgressHandle
-import net.corda.core.messaging.StateMachineUpdate
-import net.corda.core.messaging.pendingFlowsCount
+import net.corda.core.messaging.*
+import net.corda.nodeapi.internal.pendingFlowsCount
 import net.corda.tools.shell.utlities.ANSIProgressRenderer
 import net.corda.tools.shell.utlities.StdoutANSIProgressRenderer
 import org.crsh.command.InvocationContext
@@ -55,8 +47,7 @@ import java.io.FileDescriptor
 import java.io.FileInputStream
 import java.io.InputStream
 import java.io.PrintWriter
-import java.lang.reflect.InvocationTargetException
-import java.lang.reflect.UndeclaredThrowableException
+import java.lang.reflect.*
 import java.nio.file.Path
 import java.util.*
 import java.util.concurrent.CountDownLatch
@@ -91,28 +82,10 @@ object InteractiveShell {
     fun startShell(configuration: ShellConfiguration, classLoader: ClassLoader? = null) {
         rpcOps = { username: String, credentials: String ->
             val client = createCordaRPCClientWithSslAndClassLoader(hostAndPort = configuration.hostAndPort,
-                    configuration = object : CordaRPCClientConfiguration {
-                        override val maxReconnectAttempts = 1
-                    },
+                    configuration = CordaRPCClientConfiguration.DEFAULT.copy(
+                            maxReconnectAttempts = 1
+                    ),
                     sslConfiguration = configuration.ssl,
-                    classLoader = classLoader)
-            this.connection = client.start(username, credentials)
-            connection.proxy
-        }
-        _startShell(configuration, classLoader)
-    }
-
-    /**
-     * Starts an interactive shell connected to the local terminal. This shell gives administrator access to the node
-     * internals.
-     */
-    fun startShellInternal(configuration: ShellConfiguration, classLoader: ClassLoader? = null) {
-        rpcOps = { username: String, credentials: String ->
-            val client = createCordaRPCClientWithInternalSslAndClassLoader(hostAndPort = configuration.hostAndPort,
-                    configuration = object : CordaRPCClientConfiguration {
-                        override val maxReconnectAttempts = 1
-                    },
-                    sslConfiguration = configuration.nodeSslConfig,
                     classLoader = classLoader)
             this.connection = client.start(username, credentials)
             connection.proxy
@@ -131,8 +104,7 @@ object InteractiveShell {
             config["crash.ssh.port"] = configuration.sshdPort?.toString()
             config["crash.auth"] = "corda"
             configuration.sshHostKeyDirectory?.apply {
-                val sshKeysDir = configuration.sshHostKeyDirectory
-                sshKeysDir.createDirectories()
+                val sshKeysDir = configuration.sshHostKeyDirectory.createDirectories()
                 config["crash.ssh.keypath"] = (sshKeysDir / "hostkey.pem").toString()
                 config["crash.ssh.keygen"] = "true"
             }
@@ -141,6 +113,7 @@ object InteractiveShell {
         ExternalResolver.INSTANCE.addCommand("run", "Runs a method from the CordaRPCOps interface on the node.", RunShellCommand::class.java)
         ExternalResolver.INSTANCE.addCommand("flow", "Commands to work with flows. Flows are how you can change the ledger.", FlowShellCommand::class.java)
         ExternalResolver.INSTANCE.addCommand("start", "An alias for 'flow start'", StartShellCommand::class.java)
+        ExternalResolver.INSTANCE.addCommand("hashLookup", "Checks if a transaction with matching Id hash exists.", HashLookupShellCommand::class.java)
         shell = ShellLifecycle(configuration.commandsDirectory).start(config, configuration.user, configuration.password)
     }
 
@@ -237,6 +210,10 @@ object InteractiveShell {
     // TODO: This should become the default renderer rather than something used specifically by commands.
     private val outputMapper by lazy { createOutputMapper() }
 
+    @VisibleForTesting
+    lateinit var latch: CountDownLatch
+        private set
+
     /**
      * Called from the 'flow' shell command. Takes a name fragment and finds a matching flow, or prints out
      * the list of options if the request is ambiguous. Then parses [inputData] as constructor arguments using
@@ -248,7 +225,7 @@ object InteractiveShell {
                               output: RenderPrintWriter,
                               rpcOps: CordaRPCOps,
                               ansiProgressRenderer: ANSIProgressRenderer,
-                              om: ObjectMapper) {
+                              om: ObjectMapper = outputMapper) {
         val matches = try {
             rpcOps.registeredFlows().filter { nameFragment in it }
         } catch (e: PermissionException) {
@@ -258,24 +235,25 @@ object InteractiveShell {
         if (matches.isEmpty()) {
             output.println("No matching flow found, run 'flow list' to see your options.", Color.red)
             return
-        } else if (matches.size > 1) {
+        } else if (matches.size > 1 && matches.find { it.endsWith(nameFragment)} == null) {
             output.println("Ambiguous name provided, please be more specific. Your options are:")
             matches.forEachIndexed { i, s -> output.println("${i + 1}. $s", Color.yellow) }
             return
         }
 
+        val flowName = matches.find { it.endsWith(nameFragment)} ?: matches.single()
         val flowClazz: Class<FlowLogic<*>> = if (classLoader != null) {
-            uncheckedCast(Class.forName(matches.single(), true, classLoader))
+            uncheckedCast(Class.forName(flowName, true, classLoader))
         } else {
-            uncheckedCast(Class.forName(matches.single()))
+            uncheckedCast(Class.forName(flowName))
         }
         try {
             // Show the progress tracker on the console until the flow completes or is interrupted with a
             // Ctrl-C keypress.
             val stateObservable = runFlowFromString({ clazz, args -> rpcOps.startTrackedFlowDynamic(clazz, *args) }, inputData, flowClazz, om)
 
-            val latch = CountDownLatch(1)
-            ansiProgressRenderer.render(stateObservable, { latch.countDown() })
+            latch = CountDownLatch(1)
+            ansiProgressRenderer.render(stateObservable, latch::countDown)
             // Wait for the flow to end and the progress tracker to notice. By the time the latch is released
             // the tracker is done with the screen.
             while (!Thread.currentThread().isInterrupted) {
@@ -291,18 +269,14 @@ object InteractiveShell {
                     }
                 }
             }
-            stateObservable.returnValue.get()?.apply {
-                if (this !is Throwable) {
-                    output.println("Flow completed with result: $this")
-                }
-            }
+            output.println("Flow completed with result: ${stateObservable.returnValue.get()}")
         } catch (e: NoApplicableConstructor) {
             output.println("No matching constructor found:", Color.red)
             e.errors.forEach { output.println("- $it", Color.red) }
         } catch (e: PermissionException) {
             output.println(e.message ?: "Access denied", Color.red)
         } catch (e: ExecutionException) {
-          // ignoring it as already logged by the progress handler subscriber
+            // ignoring it as already logged by the progress handler subscriber
         } finally {
             InputStreamDeserializer.closeAll()
         }
@@ -310,6 +284,38 @@ object InteractiveShell {
 
     class NoApplicableConstructor(val errors: List<String>) : CordaException(this.toString()) {
         override fun toString() = (listOf("No applicable constructor for flow. Problems were:") + errors).joinToString(System.lineSeparator())
+    }
+
+    /**
+     * Tidies up a possibly generic type name by chopping off the package names of classes in a hard-coded set of
+     * hierarchies that are known to be widely used and recognised, and also not have (m)any ambiguous names in them.
+     *
+     * This is used for printing error messages when something doesn't match.
+     */
+    private fun maybeAbbreviateGenericType(type: Type, extraRecognisedPackage: String): String {
+        val packagesToAbbreviate = listOf("java.", "net.corda.core.", "kotlin.", extraRecognisedPackage)
+
+        fun shouldAbbreviate(typeName: String) = packagesToAbbreviate.any { typeName.startsWith(it) }
+        fun abbreviated(typeName: String) = if (shouldAbbreviate(typeName)) typeName.split('.').last() else typeName
+
+        fun innerLoop(type: Type): String = when (type) {
+            is ParameterizedType -> {
+                val args: List<String> = type.actualTypeArguments.map(::innerLoop)
+                abbreviated(type.rawType.typeName) + '<' + args.joinToString(", ") + '>'
+            }
+            is GenericArrayType -> {
+                innerLoop(type.genericComponentType) + "[]"
+            }
+            is Class<*> -> {
+                if (type.isArray)
+                    abbreviated(type.simpleName)
+                else
+                    abbreviated(type.name).replace('$', '.')
+            }
+            else -> type.toString()
+        }
+
+        return innerLoop(type)
     }
 
     // TODO: This utility is generally useful and might be better moved to the node class, or an RPC, if we can commit to making it stable API.
@@ -331,19 +337,26 @@ object InteractiveShell {
         // and keep track of the reasons we failed so we can print them out if no constructors are usable.
         val parser = StringToMethodCallParser(clazz, om)
         val errors = ArrayList<String>()
+
+        val classPackage = clazz.packageName
         for (ctor in clazz.constructors) {
             var paramNamesFromConstructor: List<String>? = null
+
             fun getPrototype(): List<String> {
-                val argTypes = ctor.parameterTypes.map { it.simpleName }
+                val argTypes = ctor.genericParameterTypes.map { it: Type ->
+                    // If the type name is in the net.corda.core or java namespaces, chop off the package name
+                    // because these hierarchies don't have (m)any ambiguous names and the extra detail is just noise.
+                    maybeAbbreviateGenericType(it, classPackage)
+                }
                 return paramNamesFromConstructor!!.zip(argTypes).map { (name, type) -> "$name: $type" }
             }
 
             try {
                 // Attempt construction with the given arguments.
                 paramNamesFromConstructor = parser.paramNamesFromConstructor(ctor)
-                val args = parser.parseArguments(clazz.name, paramNamesFromConstructor.zip(ctor.parameterTypes), inputData)
-                if (args.size != ctor.parameterTypes.size) {
-                    errors.add("${getPrototype()}: Wrong number of arguments (${args.size} provided, ${ctor.parameterTypes.size} needed)")
+                val args = parser.parseArguments(clazz.name, paramNamesFromConstructor.zip(ctor.genericParameterTypes), inputData)
+                if (args.size != ctor.genericParameterTypes.size) {
+                    errors.add("${getPrototype()}: Wrong number of arguments (${args.size} provided, ${ctor.genericParameterTypes.size} needed)")
                     continue
                 }
                 val flow = ctor.newInstance(*args) as FlowLogic<*>
@@ -357,10 +370,10 @@ object InteractiveShell {
             } catch (e: StringToMethodCallParser.UnparseableCallException.TooManyParameters) {
                 errors.add("${getPrototype()}: too many parameters")
             } catch (e: StringToMethodCallParser.UnparseableCallException.ReflectionDataMissing) {
-                val argTypes = ctor.parameterTypes.map { it.simpleName }
+                val argTypes = ctor.genericParameterTypes.map { it.typeName }
                 errors.add("$argTypes: <constructor missing parameter reflection data>")
             } catch (e: StringToMethodCallParser.UnparseableCallException) {
-                val argTypes = ctor.parameterTypes.map { it.simpleName }
+                val argTypes = ctor.genericParameterTypes.map { it.typeName }
                 errors.add("$argTypes: ${e.message}")
             }
         }
@@ -396,7 +409,7 @@ object InteractiveShell {
     }
 
     @JvmStatic
-    fun runRPCFromString(input: List<String>, out: RenderPrintWriter, context: InvocationContext<out Any>, cordaRPCOps: CordaRPCOps, om: ObjectMapper, isSsh: Boolean = false): Any? {
+    fun runRPCFromString(input: List<String>, out: RenderPrintWriter, context: InvocationContext<out Any>, cordaRPCOps: CordaRPCOps, om: ObjectMapper): Any? {
         val cmd = input.joinToString(" ").trim { it <= ' ' }
         if (cmd.startsWith("startflow", ignoreCase = true)) {
             // The flow command provides better support and startFlow requires special handling anyway due to
@@ -405,7 +418,7 @@ object InteractiveShell {
             out.println("Please use the 'flow' command to interact with flows rather than the 'run' command.", Color.yellow)
             return null
         } else if (cmd.substringAfter(" ").trim().equals("gracefulShutdown", ignoreCase = true)) {
-            return InteractiveShell.gracefulShutdown(out, cordaRPCOps, isSsh)
+            return InteractiveShell.gracefulShutdown(out, cordaRPCOps)
         }
 
         var result: Any? = null
@@ -444,9 +457,8 @@ object InteractiveShell {
         return result
     }
 
-
     @JvmStatic
-    fun gracefulShutdown(userSessionOut: RenderPrintWriter, cordaRPCOps: CordaRPCOps, isSsh: Boolean = false) {
+    fun gracefulShutdown(userSessionOut: RenderPrintWriter, cordaRPCOps: CordaRPCOps) {
 
         fun display(statements: RenderPrintWriter.() -> Unit) {
             statements.invoke(userSessionOut)
@@ -455,40 +467,48 @@ object InteractiveShell {
 
         var isShuttingDown = false
         try {
+            display { println("Orchestrating a clean shutdown, press CTRL+C to cancel...") }
+            isShuttingDown = true
             display {
-                println("Orchestrating a clean shutdown...")
                 println("...enabling draining mode")
-            }
-            cordaRPCOps.setFlowsDrainingModeEnabled(true)
-            display {
                 println("...waiting for in-flight flows to be completed")
             }
-            cordaRPCOps.pendingFlowsCount().updates
-                    .doOnError { error ->
-                        log.error(error.message)
-                        throw error
-                    }
-                    .doOnNext { (first, second) ->
-                        display {
-                            println("...remaining: ${first}/${second}")
+            cordaRPCOps.terminate(true)
+
+            val latch = CountDownLatch(1)
+            cordaRPCOps.pendingFlowsCount().updates.doOnError { error ->
+                log.error(error.message)
+                throw error
+            }.doAfterTerminate(latch::countDown).subscribe(
+                    // For each update.
+                    { (first, second) -> display { println("...remaining: $first / $second") } },
+                    // On error.
+                    { error ->
+                        if (!isShuttingDown) {
+                            display { println("RPC failed: ${error.rootCause}", Color.red) }
                         }
-                    }
-                    .doOnCompleted {
-                        if (isSsh) {
-                            // print in the original Shell process
-                            System.out.println("Shutting down the node via remote SSH session (it may take a while)")
-                        }
-                        display {
-                            println("Shutting down the node (it may take a while)")
-                        }
-                        cordaRPCOps.shutdown()
-                        isShuttingDown = true
+                    },
+                    // When completed.
+                    {
                         connection.forceClose()
-                        display {
-                            println("...done, quitting standalone shell now.")
-                        }
+                        // This will only show up in the standalone Shell, because the embedded one is killed as part of a node's shutdown.
+                        display { println("...done, quitting the shell now.") }
                         onExit.invoke()
-                    }.toBlocking().single()
+                    })
+            while (!Thread.currentThread().isInterrupted) {
+                try {
+                    latch.await()
+                    break
+                } catch (e: InterruptedException) {
+                    try {
+                        cordaRPCOps.setFlowsDrainingModeEnabled(false)
+                        display { println("...cancelled clean shutdown.") }
+                    } finally {
+                        Thread.currentThread().interrupt()
+                        break
+                    }
+                }
+            }
         } catch (e: StringToMethodCallParser.UnparseableCallException) {
             display {
                 println(e.message, Color.red)
@@ -496,9 +516,7 @@ object InteractiveShell {
             }
         } catch (e: Exception) {
             if (!isShuttingDown) {
-                display {
-                    println("RPC failed: ${e.rootCause}", Color.red)
-                }
+                display { println("RPC failed: ${e.rootCause}", Color.red) }
             }
         } finally {
             InputStreamSerializer.invokeContext = null

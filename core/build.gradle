@@ -53,12 +53,6 @@ processSmokeTestResources {
     }
 }
 
-buildscript {
-    repositories {
-        mavenCentral()
-    }
-}
-
 dependencies {
     testCompile "junit:junit:$junit_version"
     testCompile "commons-fileupload:commons-fileupload:$fileupload_version"
@@ -74,8 +68,8 @@ dependencies {
     compile "org.jetbrains.kotlin:kotlin-reflect:$kotlin_version"
     testCompile "org.jetbrains.kotlin:kotlin-test:$kotlin_version"
 
-    // Quasar, for suspendable fibres.
-    compileOnly "$quasar_group:quasar-core:$quasar_version:jdk8"
+    // Hamkrest, for fluent, composable matchers
+    testCompile "com.natpryce:hamkrest:$hamkrest_version"
 
     // Thread safety annotations
     compile "com.google.code.findbugs:jsr305:$jsr305_version"
@@ -89,6 +83,9 @@ dependencies {
 
     // Guava: Google utilities library.
     testCompile "com.google.guava:guava:$guava_version"
+
+    // For caches rather than guava
+    compile "com.github.ben-manes.caffeine:caffeine:$caffeine_version"
 
     // Smoke tests do NOT have any Node code on the classpath!
     smokeTestCompile project(':smoke-test-utils')
@@ -124,7 +121,10 @@ task copyQuasarJar(type: Copy) {
     rename { filename -> "quasar.jar"}
 }
 
-jar.finalizedBy(copyQuasarJar)
+jar {
+    finalizedBy(copyQuasarJar)
+    baseName 'corda-core'
+}
 
 configurations {
     testArtifacts.extendsFrom testRuntime
@@ -153,10 +153,6 @@ task smokeTest(type: Test) {
 
 artifacts {
     testArtifacts testJar
-}
-
-jar {
-    baseName 'corda-core'
 }
 
 scanApi {

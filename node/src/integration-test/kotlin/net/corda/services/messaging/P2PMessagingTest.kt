@@ -38,7 +38,10 @@ class P2PMessagingTest {
     }
 
     private fun startDriverWithDistributedService(dsl: DriverDSL.(List<InProcess>) -> Unit) {
-        driver(DriverParameters(startNodesInProcess = true, notarySpecs = listOf(NotarySpec(DISTRIBUTED_SERVICE_NAME, cluster = ClusterSpec.Raft(clusterSize = 2))))) {
+        driver(DriverParameters(
+                startNodesInProcess = true,
+                notarySpecs = listOf(NotarySpec(DISTRIBUTED_SERVICE_NAME, cluster = ClusterSpec.Raft(clusterSize = 2)))
+        )) {
             dsl(defaultNotaryHandle.nodeHandles.getOrThrow().map { (it as InProcess) })
         }
     }
@@ -63,7 +66,7 @@ class P2PMessagingTest {
         }
         assertThat(participatingNodes).containsOnlyElementsOf(participatingServiceNodes.map { it.services.myInfo })
     }
-    
+
     private fun InProcess.respondWith(message: Any) {
         internalServices.networkService.addMessageHandler("test.request") { netMessage, _, handler ->
             val request = netMessage.data.deserialize<TestRequest>()

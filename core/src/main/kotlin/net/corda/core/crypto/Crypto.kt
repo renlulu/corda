@@ -1,5 +1,8 @@
 package net.corda.core.crypto
 
+import net.corda.core.DeleteForDJVM
+import net.corda.core.KeepForDJVM
+import net.corda.core.StubOutForDJVM
 import net.corda.core.crypto.internal.*
 import net.corda.core.serialization.serialize
 import net.i2p.crypto.eddsa.EdDSAEngine
@@ -21,6 +24,7 @@ import org.bouncycastle.asn1.sec.SECObjectIdentifiers
 import org.bouncycastle.asn1.x509.AlgorithmIdentifier
 import org.bouncycastle.asn1.x509.SubjectPublicKeyInfo
 import org.bouncycastle.asn1.x9.X9ObjectIdentifiers
+import org.bouncycastle.crypto.CryptoServicesRegistrar
 import org.bouncycastle.jcajce.provider.asymmetric.ec.BCECPrivateKey
 import org.bouncycastle.jcajce.provider.asymmetric.ec.BCECPublicKey
 import org.bouncycastle.jcajce.provider.asymmetric.rsa.BCRSAPrivateKey
@@ -58,6 +62,7 @@ import javax.crypto.spec.SecretKeySpec
  * <li>SPHINCS256_SHA512 (SPHINCS-256 hash-based signature scheme using SHA512 as hash algorithm).
  * </ul>
  */
+@KeepForDJVM
 object Crypto {
     /**
      * RSA PKCS#1 signature scheme using SHA256 for message hashing.
@@ -378,6 +383,7 @@ object Crypto {
      * @throws InvalidKeyException if the private key is invalid.
      * @throws SignatureException if signing is not possible due to malformed data or private key.
      */
+    @DeleteForDJVM
     @JvmStatic
     @Throws(InvalidKeyException::class, SignatureException::class)
     fun doSign(privateKey: PrivateKey, clearData: ByteArray): ByteArray = doSign(findSignatureScheme(privateKey), privateKey, clearData)
@@ -392,6 +398,7 @@ object Crypto {
      * @throws InvalidKeyException if the private key is invalid.
      * @throws SignatureException if signing is not possible due to malformed data or private key.
      */
+    @DeleteForDJVM
     @JvmStatic
     @Throws(InvalidKeyException::class, SignatureException::class)
     fun doSign(schemeCodeName: String, privateKey: PrivateKey, clearData: ByteArray): ByteArray {
@@ -408,6 +415,7 @@ object Crypto {
      * @throws InvalidKeyException if the private key is invalid.
      * @throws SignatureException if signing is not possible due to malformed data or private key.
      */
+    @DeleteForDJVM
     @JvmStatic
     @Throws(InvalidKeyException::class, SignatureException::class)
     fun doSign(signatureScheme: SignatureScheme, privateKey: PrivateKey, clearData: ByteArray): ByteArray {
@@ -416,7 +424,16 @@ object Crypto {
         }
         require(clearData.isNotEmpty()) { "Signing of an empty array is not permitted!" }
         val signature = Signature.getInstance(signatureScheme.signatureName, providerMap[signatureScheme.providerName])
-        signature.initSign(privateKey)
+        // Note that deterministic signature schemes, such as EdDSA, do not require extra randomness, but we have to
+        // ensure that non-deterministic algorithms (i.e., ECDSA) use non-blocking SecureRandom implementations (if possible).
+        // TODO consider updating this when the related BC issue for Sphincs is fixed.
+        if (signatureScheme != SPHINCS256_SHA256) {
+            signature.initSign(privateKey, newSecureRandom())
+        } else {
+            // Special handling for Sphincs, due to a BC implementation issue.
+            // As Sphincs is deterministic, it does not require RNG input anyway.
+            signature.initSign(privateKey)
+        }
         signature.update(clearData)
         return signature.sign()
     }
@@ -433,6 +450,7 @@ object Crypto {
      * @throws InvalidKeyException if the private key is invalid.
      * @throws SignatureException if signing is not possible due to malformed data or private key.
      */
+    @DeleteForDJVM
     @JvmStatic
     @Throws(InvalidKeyException::class, SignatureException::class)
     fun doSign(keyPair: KeyPair, signableData: SignableData): TransactionSignature {
@@ -613,6 +631,7 @@ object Crypto {
      * @return a KeyPair for the requested signature scheme code name.
      * @throws IllegalArgumentException if the requested signature scheme is not supported.
      */
+    @DeleteForDJVM
     @JvmStatic
     fun generateKeyPair(schemeCodeName: String): KeyPair = generateKeyPair(findSignatureScheme(schemeCodeName))
 
@@ -623,6 +642,7 @@ object Crypto {
      * @return a new [KeyPair] for the requested [SignatureScheme].
      * @throws IllegalArgumentException if the requested signature scheme is not supported.
      */
+    @DeleteForDJVM
     @JvmOverloads
     @JvmStatic
     fun generateKeyPair(signatureScheme: SignatureScheme = DEFAULT_SIGNATURE_SCHEME): KeyPair {
@@ -1010,5 +1030,15 @@ object Crypto {
     @JvmStatic
     fun registerProviders() {
         providerMap
+        // Adding our non-blocking newSecureRandom as default for any BouncyCastle operations
+        // (applies only when a SecureRandom is not specifically defined, i.e., if we call
+        // signature.initSign(privateKey) instead of signature.initSign(privateKey, newSecureRandom()
+        // for a BC algorithm, i.e., ECDSA).
+        setBouncyCastleRNG()
+    }
+
+    @StubOutForDJVM
+    private fun setBouncyCastleRNG() {
+        CryptoServicesRegistrar.setSecureRandom(newSecureRandom())
     }
 }

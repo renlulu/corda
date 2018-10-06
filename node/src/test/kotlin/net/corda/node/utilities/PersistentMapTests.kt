@@ -16,8 +16,9 @@ class PersistentMapTests {
     //create a test map using an existing db table
     private fun createTestMap(): PersistentMap<String, String, ContractUpgradeServiceImpl.DBContractUpgrade, String> {
         return PersistentMap(
+                "Test_test",
                 toPersistentEntityKey = { it },
-                fromPersistentEntity = { Pair(it.stateRef, it.upgradedContractClassName) },
+                fromPersistentEntity = { Pair(it.stateRef, it.upgradedContractClassName ?: "") },
                 toPersistentEntity = { key: String, value: String ->
                     ContractUpgradeServiceImpl.DBContractUpgrade().apply {
                         stateRef = key
@@ -25,7 +26,7 @@ class PersistentMapTests {
                     }
                 },
                 persistentEntityClass = ContractUpgradeServiceImpl.DBContractUpgrade::class.java
-        )
+        ).apply { preload() }
     }
 
     @Test

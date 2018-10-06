@@ -2,6 +2,7 @@ package net.corda.serialization.internal.carpenter
 
 import net.corda.core.internal.uncheckedCast
 import net.corda.serialization.internal.AllWhitelist
+import org.assertj.core.api.Assertions.assertThatExceptionOfType
 import org.junit.Test
 import java.beans.Introspector
 import java.lang.reflect.Field
@@ -128,6 +129,27 @@ class ClassCarpenterTest {
         assertEquals("B{a=xa, b=xb}", i.toString())
     }
 
+    /**
+     * Tests the fix for [Corda-1945](https://r3-cev.atlassian.net/secure/RapidBoard.jspa?rapidView=83&modal=detail&selectedIssue=CORDA-1945)
+     */
+    @Test
+    fun `superclasses with double-size primitive constructor parameters`() {
+        val schema1 = ClassSchema(
+                "gen.A",
+                mapOf("a" to NonNullableField(Long::class.javaPrimitiveType!!)))
+
+        val schema2 = ClassSchema(
+                "gen.B",
+                mapOf("b" to NonNullableField(String::class.java)),
+                schema1)
+
+        val clazz = cc.build(schema2)
+        val i = clazz.constructors[0].newInstance(1L, "xb") as SimpleFieldAccess
+        assertEquals(1L, i["a"])
+        assertEquals("xb", i["b"])
+        assertEquals("B{a=1, b=xb}", i.toString())
+    }
+
     @Test
     fun interfaces() {
         val schema1 = ClassSchema(
@@ -145,21 +167,40 @@ class ClassCarpenterTest {
         assertEquals(1, i.b)
     }
 
-    @Test(expected = InterfaceMismatchException::class)
-    fun `mismatched interface`() {
-        val schema1 = ClassSchema(
+    @Test
+    fun `unimplemented interface method with lenient = false`() {
+        val schemaA = ClassSchema(
                 "gen.A",
                 mapOf("a" to NonNullableField(String::class.java)))
 
-        val schema2 = ClassSchema(
+        val schemaB = ClassSchema(
                 "gen.B",
                 mapOf("c" to NonNullableField(Int::class.java)),
-                schema1,
+                schemaA,
                 interfaces = listOf(DummyInterface::class.java))
 
-        val clazz = cc.build(schema2)
-        val i = clazz.constructors[0].newInstance("xa", 1) as DummyInterface
-        assertEquals(1, i.b)
+        assertThatExceptionOfType(InterfaceMismatchException::class.java).isThrownBy { cc.build(schemaB) }
+    }
+
+    @Test
+    fun `unimplemented interface method with lenient = true`() {
+        val cc = ClassCarpenterImpl(whitelist = AllWhitelist, lenient = true)
+
+        val schemaA = ClassSchema(
+                "gen.A",
+                mapOf("a" to NonNullableField(String::class.java)))
+
+        val schemaB = ClassSchema(
+                "gen.B",
+                mapOf("c" to NonNullableField(Int::class.java)),
+                schemaA,
+                interfaces = listOf(DummyInterface::class.java))
+
+        val classB = cc.build(schemaB)
+        val b = classB.constructors[0].newInstance("xa", 1) as DummyInterface
+        assertEquals("xa", b.a)
+        assertEquals(1, classB.getMethod("getC").invoke(b))
+        assertThatExceptionOfType(AbstractMethodError::class.java).isThrownBy { b.b }
     }
 
     @Test

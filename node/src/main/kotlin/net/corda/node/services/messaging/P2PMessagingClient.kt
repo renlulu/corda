@@ -1,6 +1,7 @@
 package net.corda.node.services.messaging
 
 import co.paralleluniverse.fibers.Suspendable
+import com.codahale.metrics.MetricRegistry
 import net.corda.core.crypto.toStringShort
 import net.corda.core.identity.CordaX500Name
 import net.corda.core.internal.ThreadBox
@@ -15,11 +16,7 @@ import net.corda.core.serialization.SingletonSerializeAsToken
 import net.corda.core.serialization.deserialize
 import net.corda.core.serialization.internal.nodeSerializationEnv
 import net.corda.core.serialization.serialize
-import net.corda.core.utilities.ByteSequence
-import net.corda.core.utilities.NetworkHostAndPort
-import net.corda.core.utilities.OpaqueBytes
-import net.corda.core.utilities.contextLogger
-import net.corda.core.utilities.trace
+import net.corda.core.utilities.*
 import net.corda.node.VersionInfo
 import net.corda.node.internal.LifecycleSupport
 import net.corda.node.internal.artemis.ReactiveArtemisConsumer
@@ -30,32 +27,26 @@ import net.corda.node.services.statemachine.DeduplicationId
 import net.corda.node.services.statemachine.ExternalEvent
 import net.corda.node.services.statemachine.SenderDeduplicationId
 import net.corda.node.utilities.AffinityExecutor
-import net.corda.nodeapi.ArtemisTcpTransport.Companion.p2pConnectorTcpTransport
+import net.corda.node.utilities.NamedCacheFactory
 import net.corda.nodeapi.internal.ArtemisMessagingComponent
-import net.corda.nodeapi.internal.ArtemisMessagingComponent.ArtemisAddress
+import net.corda.nodeapi.internal.ArtemisMessagingComponent.*
 import net.corda.nodeapi.internal.ArtemisMessagingComponent.Companion.BRIDGE_CONTROL
 import net.corda.nodeapi.internal.ArtemisMessagingComponent.Companion.BRIDGE_NOTIFY
 import net.corda.nodeapi.internal.ArtemisMessagingComponent.Companion.JOURNAL_HEADER_SIZE
 import net.corda.nodeapi.internal.ArtemisMessagingComponent.Companion.P2PMessagingHeaders
 import net.corda.nodeapi.internal.ArtemisMessagingComponent.Companion.PEERS_PREFIX
-import net.corda.nodeapi.internal.ArtemisMessagingComponent.NodeAddress
-import net.corda.nodeapi.internal.ArtemisMessagingComponent.RemoteInboxAddress
-import net.corda.nodeapi.internal.ArtemisMessagingComponent.ServiceAddress
+import net.corda.nodeapi.internal.ArtemisTcpTransport.Companion.p2pConnectorTcpTransport
 import net.corda.nodeapi.internal.bridging.BridgeControl
 import net.corda.nodeapi.internal.bridging.BridgeEntry
 import net.corda.nodeapi.internal.persistence.CordaPersistence
 import net.corda.nodeapi.internal.requireMessageSize
+import org.apache.activemq.artemis.api.config.ActiveMQDefaultConfiguration
 import org.apache.activemq.artemis.api.core.ActiveMQObjectClosedException
 import org.apache.activemq.artemis.api.core.Message.HDR_DUPLICATE_DETECTION_ID
 import org.apache.activemq.artemis.api.core.Message.HDR_VALIDATED_USER
 import org.apache.activemq.artemis.api.core.RoutingType
 import org.apache.activemq.artemis.api.core.SimpleString
-import org.apache.activemq.artemis.api.core.client.ActiveMQClient
-import org.apache.activemq.artemis.api.core.client.ClientConsumer
-import org.apache.activemq.artemis.api.core.client.ClientMessage
-import org.apache.activemq.artemis.api.core.client.ClientProducer
-import org.apache.activemq.artemis.api.core.client.ClientSession
-import org.apache.activemq.artemis.api.core.client.ServerLocator
+import org.apache.activemq.artemis.api.core.client.*
 import rx.Observable
 import rx.Subscription
 import rx.subjects.PublishSubject
@@ -82,36 +73,33 @@ import javax.annotation.concurrent.ThreadSafe
  * @param config The configuration of the node, which is used for controlling the message redelivery options.
  * @param versionInfo All messages from the node carry the version info and received messages are checked against this for compatibility.
  * @param serverAddress The host and port of the Artemis broker.
- * @param myIdentity The primary identity of the node, which defines the messaging address for externally received messages.
- * It is also used to construct the myAddress field, which is ultimately advertised in the network map.
- * @param serviceIdentity An optional second identity if the node is also part of a group address, for example a notary.
  * @param nodeExecutor The received messages are marshalled onto the server executor to prevent Netty buffers leaking during fiber suspends.
  * @param database The nodes database, which is used to deduplicate messages.
- * @param advertisedAddress The externally advertised version of the Artemis broker address used to construct myAddress and included
- * in the network map data.
- * @param maxMessageSize A bound applied to the message size.
  */
 @ThreadSafe
 class P2PMessagingClient(val config: NodeConfiguration,
                          private val versionInfo: VersionInfo,
-                         private val serverAddress: NetworkHostAndPort,
-                         private val myIdentity: PublicKey,
-                         private val serviceIdentity: PublicKey?,
+                         val serverAddress: NetworkHostAndPort,
                          private val nodeExecutor: AffinityExecutor.ServiceAffinityExecutor,
                          private val database: CordaPersistence,
                          private val networkMap: NetworkMapCacheInternal,
-                         advertisedAddress: NetworkHostAndPort = serverAddress,
-                         private val maxMessageSize: Int,
+                         @Suppress("UNUSED")
+                         private val metricRegistry: MetricRegistry,
+                         cacheFactory: NamedCacheFactory,
                          private val isDrainingModeOn: () -> Boolean,
                          private val drainingModeWasChangedEvents: Observable<Pair<Boolean, Boolean>>
-) : SingletonSerializeAsToken(), MessagingService, AddressToArtemisQueueResolver, AutoCloseable {
+) : SingletonSerializeAsToken(), MessagingService, AddressToArtemisQueueResolver {
     companion object {
         private val log = contextLogger()
+    }
 
-        class NodeClientMessage(override val topic: String, override val data: ByteSequence, override val uniqueMessageId: DeduplicationId, override val senderUUID: String?, override val additionalHeaders: Map<String, String>) : Message {
-            override val debugTimestamp: Instant = Instant.now()
-            override fun toString() = "$topic#${String(data.bytes)}"
-        }
+    private class NodeClientMessage(override val topic: String,
+                                    override val data: ByteSequence,
+                                    override val uniqueMessageId: DeduplicationId,
+                                    override val senderUUID: String?,
+                                    override val additionalHeaders: Map<String, String>) : Message {
+        override val debugTimestamp: Instant = Instant.now()
+        override fun toString() = "$topic#${String(data.bytes)}"
     }
 
     private class InnerState {
@@ -132,7 +120,12 @@ class P2PMessagingClient(val config: NodeConfiguration,
     /** A registration to handle messages of different types */
     data class HandlerRegistration(val topic: String, val callback: Any) : MessageHandlerRegistration
 
-    override val myAddress: SingleMessageRecipient = NodeAddress(myIdentity, advertisedAddress)
+    private lateinit var myIdentity: PublicKey
+    private var serviceIdentity: PublicKey? = null
+    private lateinit var advertisedAddress: NetworkHostAndPort
+    private var maxMessageSize: Int = -1
+
+    override val myAddress: SingleMessageRecipient get() = NodeAddress(myIdentity)
     override val ourSenderUUID = UUID.randomUUID().toString()
 
     private val state = ThreadBox(InnerState())
@@ -141,20 +134,32 @@ class P2PMessagingClient(val config: NodeConfiguration,
 
     private val handlers = ConcurrentHashMap<String, MessageHandler>()
 
-    private val deduplicator = P2PMessageDeduplicator(database)
+    private val deduplicator = P2PMessageDeduplicator(cacheFactory, database)
     internal var messagingExecutor: MessagingExecutor? = null
 
-    fun start() {
+    /**
+     * @param myIdentity The primary identity of the node, which defines the messaging address for externally received messages.
+     * It is also used to construct the myAddress field, which is ultimately advertised in the network map.
+     * @param serviceIdentity An optional second identity if the node is also part of a group address, for example a notary.
+     * @param advertisedAddress The externally advertised version of the Artemis broker address used to construct myAddress and included
+     * in the network map data.
+     * @param maxMessageSize A bound applied to the message size.
+     */
+    fun start(myIdentity: PublicKey, serviceIdentity: PublicKey?, maxMessageSize: Int, advertisedAddress: NetworkHostAndPort = serverAddress) {
+        this.myIdentity = myIdentity
+        this.serviceIdentity = serviceIdentity
+        this.advertisedAddress = advertisedAddress
+        this.maxMessageSize = maxMessageSize
         state.locked {
             started = true
             log.info("Connecting to message broker: $serverAddress")
             // TODO Add broker CN to config for host verification in case the embedded broker isn't used
-            val tcpTransport = p2pConnectorTcpTransport(serverAddress, config)
+            val tcpTransport = p2pConnectorTcpTransport(serverAddress, config.p2pSslOptions)
             locator = ActiveMQClient.createServerLocatorWithoutHA(tcpTransport).apply {
                 // Never time out on our loopback Artemis connections. If we switch back to using the InVM transport this
                 // would be the default and the two lines below can be deleted.
-                connectionTTL = -1
-                clientFailureCheckPeriod = -1
+                connectionTTL = 60000
+                clientFailureCheckPeriod = 30000
                 minLargeMessageSize = maxMessageSize + JOURNAL_HEADER_SIZE
                 isUseGlobalPools = nodeSerializationEnv != null
             }
@@ -163,7 +168,7 @@ class P2PMessagingClient(val config: NodeConfiguration,
             // using our TLS certificate.
             // Note that the acknowledgement of messages is not flushed to the Artermis journal until the default buffer
             // size of 1MB is acknowledged.
-            val createNewSession = { sessionFactory!!.createSession(ArtemisMessagingComponent.NODE_P2P_USER, ArtemisMessagingComponent.NODE_P2P_USER, false, true, true, locator!!.isPreAcknowledge, ActiveMQClient.DEFAULT_ACK_BATCH_SIZE) }
+            val createNewSession = { sessionFactory!!.createSession(ArtemisMessagingComponent.NODE_P2P_USER, ArtemisMessagingComponent.NODE_P2P_USER, false, true, true, false, ActiveMQClient.DEFAULT_ACK_BATCH_SIZE) }
 
             producerSession = createNewSession()
             bridgeSession = createNewSession()
@@ -180,7 +185,8 @@ class P2PMessagingClient(val config: NodeConfiguration,
                 inboxes += RemoteInboxAddress(it).queueName
             }
 
-            inboxes.forEach { createQueueIfAbsent(it, producerSession!!) }
+            inboxes.forEach { createQueueIfAbsent(it, producerSession!!, exclusive = true) }
+
             p2pConsumer = P2PMessagingConsumer(inboxes, createNewSession, isDrainingModeOn, drainingModeWasChangedEvents)
 
             messagingExecutor = MessagingExecutor(
@@ -232,7 +238,7 @@ class P2PMessagingClient(val config: NodeConfiguration,
         fun gatherAddresses(node: NodeInfo): Sequence<BridgeEntry> {
             return state.locked {
                 node.legalIdentitiesAndCerts.map {
-                    val messagingAddress = NodeAddress(it.party.owningKey, node.addresses.first())
+                    val messagingAddress = NodeAddress(it.party.owningKey)
                     BridgeEntry(messagingAddress.queueName, node.addresses, node.legalIdentities.map { it.name })
                 }.filter { producerSession!!.queueQuery(SimpleString(it.queueName)).isExists }.asSequence()
             }
@@ -241,14 +247,14 @@ class P2PMessagingClient(val config: NodeConfiguration,
         fun deployBridges(node: NodeInfo) {
             gatherAddresses(node)
                     .forEach {
-                        sendBridgeControl(BridgeControl.Create(myIdentity.toStringShort(), it))
+                        sendBridgeControl(BridgeControl.Create(config.myLegalName.toString(), it))
                     }
         }
 
         fun destroyBridges(node: NodeInfo) {
             gatherAddresses(node)
                     .forEach {
-                        sendBridgeControl(BridgeControl.Delete(myIdentity.toStringShort(), it))
+                        sendBridgeControl(BridgeControl.Delete(config.myLegalName.toString(), it))
                     }
         }
 
@@ -288,7 +294,7 @@ class P2PMessagingClient(val config: NodeConfiguration,
                 delayStartQueues += queue.toString()
             }
         }
-        val startupMessage = BridgeControl.NodeToBridgeSnapshot(myIdentity.toStringShort(), inboxes, requiredBridges)
+        val startupMessage = BridgeControl.NodeToBridgeSnapshot(config.myLegalName.toString(), inboxes, requiredBridges)
         sendBridgeControl(startupMessage)
     }
 
@@ -309,12 +315,9 @@ class P2PMessagingClient(val config: NodeConfiguration,
                     return
                 }
                 eventsSubscription = p2pConsumer!!.messages
-                        .doOnError { error -> throw error }
-                        .doOnNext { message -> deliver(message) }
                         // this `run()` method is semantically meant to block until the message consumption runs, hence the latch here
                         .doOnCompleted(latch::countDown)
-                        .doOnError { error -> throw error }
-                        .subscribe()
+                        .subscribe({ message -> deliver(message) }, { error -> throw error })
                 p2pConsumer!!
             }
             consumer.start()
@@ -481,20 +484,20 @@ class P2PMessagingClient(val config: NodeConfiguration,
             val internalTargetQueue = (address as? ArtemisAddress)?.queueName
                     ?: throw IllegalArgumentException("Not an Artemis address")
             state.locked {
-                createQueueIfAbsent(internalTargetQueue, producerSession!!)
+                createQueueIfAbsent(internalTargetQueue, producerSession!!, exclusive = address !is ServiceAddress)
             }
             internalTargetQueue
         }
     }
 
     /** Attempts to create a durable queue on the broker which is bound to an address of the same name. */
-    private fun createQueueIfAbsent(queueName: String, session: ClientSession) {
+    private fun createQueueIfAbsent(queueName: String, session: ClientSession, exclusive: Boolean) {
         fun sendBridgeCreateMessage() {
             val keyHash = queueName.substring(PEERS_PREFIX.length)
             val peers = networkMap.getNodesByOwningKeyIndex(keyHash)
             for (node in peers) {
                 val bridge = BridgeEntry(queueName, node.addresses, node.legalIdentities.map { it.name })
-                val createBridgeMessage = BridgeControl.Create(myIdentity.toStringShort(), bridge)
+                val createBridgeMessage = BridgeControl.Create(config.myLegalName.toString(), bridge)
                 sendBridgeControl(createBridgeMessage)
             }
         }
@@ -507,7 +510,9 @@ class P2PMessagingClient(val config: NodeConfiguration,
                 val queueQuery = session.queueQuery(SimpleString(queueName))
                 if (!queueQuery.isExists) {
                     log.info("Create fresh queue $queueName bound on same address")
-                    session.createQueue(queueName, RoutingType.ANYCAST, queueName, true)
+                    session.createQueue(queueName, RoutingType.ANYCAST, queueName, null, true, false,
+                            ActiveMQDefaultConfiguration.getDefaultMaxQueueConsumers(),
+                            ActiveMQDefaultConfiguration.getDefaultPurgeOnNoConsumers(), exclusive, null)
                     sendBridgeCreateMessage()
                 }
             }
@@ -537,7 +542,7 @@ class P2PMessagingClient(val config: NodeConfiguration,
 
     override fun getAddressOfParty(partyInfo: PartyInfo): MessageRecipients {
         return when (partyInfo) {
-            is PartyInfo.SingleNode -> NodeAddress(partyInfo.party.owningKey, partyInfo.addresses.single())
+            is PartyInfo.SingleNode -> NodeAddress(partyInfo.party.owningKey)
             is PartyInfo.DistributedNode -> ServiceAddress(partyInfo.party.owningKey)
         }
     }

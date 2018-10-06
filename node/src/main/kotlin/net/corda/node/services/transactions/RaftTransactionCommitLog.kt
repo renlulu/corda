@@ -20,10 +20,10 @@ import net.corda.core.flows.StateConsumptionDetails
 import net.corda.core.internal.VisibleForTesting
 import net.corda.core.internal.notary.isConsumedByTheSameTx
 import net.corda.core.internal.notary.validateTimeWindow
-import net.corda.core.serialization.SerializationDefaults
-import net.corda.core.serialization.SerializationFactory
-import net.corda.core.serialization.deserialize
-import net.corda.core.serialization.serialize
+import net.corda.core.serialization.*
+import net.corda.core.serialization.internal.CheckpointSerializationDefaults
+import net.corda.core.serialization.internal.CheckpointSerializationFactory
+import net.corda.core.serialization.internal.checkpointSerialize
 import net.corda.core.utilities.ByteSequence
 import net.corda.core.utilities.contextLogger
 import net.corda.core.utilities.debug
@@ -45,12 +45,13 @@ class RaftTransactionCommitLog<E, EK>(
         createMap: () -> AppendOnlyPersistentMap<StateRef, Pair<Long, SecureHash>, E, EK>
 ) : StateMachine(), Snapshottable {
     object Commands {
-        class CommitTransaction(
+        class CommitTransaction @JvmOverloads constructor(
                 val states: List<StateRef>,
                 val txId: SecureHash,
                 val requestingParty: String,
                 val requestSignature: ByteArray,
-                val timeWindow: TimeWindow? = null
+                val timeWindow: TimeWindow? = null,
+                val references: List<StateRef> = emptyList()
         ) : Command<NotaryError?> {
             override fun compaction(): Command.CompactionMode {
                 // The FULL compaction mode retains the command in the log until it has been stored and applied on all
@@ -73,18 +74,21 @@ class RaftTransactionCommitLog<E, EK>(
 
     /** Commits the input states for the transaction as specified in the given [Commands.CommitTransaction]. */
     fun commitTransaction(raftCommit: Commit<Commands.CommitTransaction>): NotaryError? {
+        val conflictingStates = LinkedHashMap<StateRef, StateConsumptionDetails>()
+
+        fun checkConflict(states: List<StateRef>, type: StateConsumptionDetails.ConsumedStateType) = states.forEach { stateRef ->
+            map[stateRef]?.let { conflictingStates[stateRef] = StateConsumptionDetails(it.second.sha256(), type) }
+        }
+
         raftCommit.use {
             val index = it.index()
             return db.transaction {
                 val commitCommand = raftCommit.command()
                 logRequest(commitCommand)
-                val states = commitCommand.states
                 val txId = commitCommand.txId
-                log.debug("State machine commit: storing entries with keys (${states.joinToString()})")
-                val conflictingStates = LinkedHashMap<StateRef, StateConsumptionDetails>()
-                for (state in states) {
-                    map[state]?.let { conflictingStates[state] = StateConsumptionDetails(it.second.sha256()) }
-                }
+                log.debug("State machine commit: attempting to store entries with keys (${commitCommand.states.joinToString()})")
+                checkConflict(commitCommand.states, StateConsumptionDetails.ConsumedStateType.INPUT_STATE)
+                checkConflict(commitCommand.references, StateConsumptionDetails.ConsumedStateType.REFERENCE_INPUT_STATE)
                 if (conflictingStates.isNotEmpty()) {
                     if (isConsumedByTheSameTx(commitCommand.txId.sha256(), conflictingStates)) {
                         null
@@ -95,9 +99,9 @@ class RaftTransactionCommitLog<E, EK>(
                 } else {
                     val outsideTimeWindowError = validateTimeWindow(clock.instant(), commitCommand.timeWindow)
                     if (outsideTimeWindowError == null) {
-                        val entries = states.map { it to Pair(index, txId) }.toMap()
+                        val entries = commitCommand.states.map { it to Pair(index, txId) }.toMap()
                         map.putAll(entries)
-                        log.debug { "Successfully committed all input states: $states" }
+                        log.debug { "Successfully committed all input states: ${commitCommand.states}" }
                         null
                     } else {
                         outsideTimeWindowError
@@ -196,11 +200,11 @@ class RaftTransactionCommitLog<E, EK>(
         }
 
         class CordaKryoSerializer<T : Any> : TypeSerializer<T> {
-            private val context = SerializationDefaults.CHECKPOINT_CONTEXT.withEncoding(CordaSerializationEncoding.SNAPPY)
-            private val factory = SerializationFactory.defaultFactory
+            private val context = CheckpointSerializationDefaults.CHECKPOINT_CONTEXT.withEncoding(CordaSerializationEncoding.SNAPPY)
+            private val factory = CheckpointSerializationFactory.defaultFactory
 
             override fun write(obj: T, buffer: BufferOutput<*>, serializer: Serializer) {
-                val serialized = obj.serialize(context = context)
+                val serialized = obj.checkpointSerialize(context = context)
                 buffer.writeInt(serialized.size)
                 buffer.write(serialized.bytes)
             }

@@ -1,9 +1,8 @@
 package net.corda.core.utilities
 
+import net.corda.core.KeepForDJVM
 import net.corda.core.internal.uncheckedCast
 import net.corda.core.serialization.CordaSerializable
-import net.corda.core.utilities.Try.Failure
-import net.corda.core.utilities.Try.Success
 
 /**
  * Representation of an operation that has either succeeded with a result (represented by [Success]) or failed with an
@@ -59,6 +58,36 @@ sealed class Try<out A> {
         is Failure -> uncheckedCast(this)
     }
 
+    /** Applies the given action to the value if [Success], or does nothing if [Failure]. Returns `this` for chaining. */
+    fun doOnSuccess(action: (A) -> Unit): Try<A> {
+        when (this) {
+            is Success -> action.invoke(value)
+            is Failure -> {}
+        }
+        return this
+    }
+
+    /** Applies the given action to the error if [Failure], or does nothing if [Success]. Returns `this` for chaining. */
+    fun doOnFailure(action: (Throwable) -> Unit): Try<A> {
+        when (this) {
+            is Success -> {}
+            is Failure -> action.invoke(exception)
+        }
+        return this
+    }
+
+    /** Applies the given action to the exception if [Failure], rethrowing [Error]s. Does nothing if [Success]. Returns `this` for chaining. */
+    fun doOnException(action: (Exception) -> Unit): Try<A> {
+        return doOnFailure { error ->
+            if (error is Exception) {
+                action.invoke(error)
+            } else {
+                throw error
+            }
+        }
+    }
+
+    @KeepForDJVM
     data class Success<out A>(val value: A) : Try<A>() {
         override val isSuccess: Boolean get() = true
         override val isFailure: Boolean get() = false
@@ -66,6 +95,7 @@ sealed class Try<out A> {
         override fun toString(): String = "Success($value)"
     }
 
+    @KeepForDJVM
     data class Failure<out A>(val exception: Throwable) : Try<A>() {
         override val isSuccess: Boolean get() = false
         override val isFailure: Boolean get() = true

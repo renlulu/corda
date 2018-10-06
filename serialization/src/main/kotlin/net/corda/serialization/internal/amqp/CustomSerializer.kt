@@ -1,5 +1,6 @@
 package net.corda.serialization.internal.amqp
 
+import net.corda.core.KeepForDJVM
 import net.corda.core.internal.uncheckedCast
 import net.corda.core.serialization.SerializationContext
 import net.corda.serialization.internal.amqp.SerializerFactory.Companion.nameForType
@@ -58,6 +59,7 @@ abstract class CustomSerializer<T : Any> : AMQPSerializer<T>, SerializerFor {
      * subclass in the schema, so that we can distinguish between subclasses.
      */
     // TODO: should this be a custom serializer at all, or should it just be a plain AMQPSerializer?
+    @KeepForDJVM
     class SubClass<T : Any>(private val clazz: Class<*>, private val superClassSerializer: CustomSerializer<T>) : CustomSerializer<T>() {
         // TODO: should this be empty or contain the schema of the super?
         override val schemaForDocumentation = Schema(emptyList())
@@ -65,7 +67,7 @@ abstract class CustomSerializer<T : Any> : AMQPSerializer<T>, SerializerFor {
         override fun isSerializerFor(clazz: Class<*>): Boolean = clazz == this.clazz
         override val type: Type get() = clazz
         override val typeDescriptor: Symbol by lazy {
-            Symbol.valueOf("$DESCRIPTOR_DOMAIN:${SerializerFingerPrinter().fingerprintForDescriptors(superClassSerializer.typeDescriptor.toString(), nameForType(clazz))}")
+            Symbol.valueOf("$DESCRIPTOR_DOMAIN:${fingerprintForDescriptors(superClassSerializer.typeDescriptor.toString(), nameForType(clazz))}")
         }
         private val typeNotation: TypeNotation = RestrictedType(
                 SerializerFactory.nameForType(clazz),

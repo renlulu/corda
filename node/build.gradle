@@ -1,3 +1,15 @@
+// Import private compile time constants
+buildscript {
+    def properties = new Properties()
+    file("$projectDir/src/main/resources/build.properties").withInputStream { properties.load(it) }
+
+    ext.jolokia_version = properties.getProperty('jolokiaAgentVersion')
+}
+
+plugins {
+    id 'com.google.cloud.tools.jib' version '0.9.4'
+}
+
 apply plugin: 'kotlin'
 // Java Persistence API support: create no-arg constructor
 // see: http://stackoverflow.com/questions/32038177/kotlin-with-jpa-default-constructor-hell
@@ -8,14 +20,6 @@ apply plugin: 'net.corda.plugins.publish-utils'
 apply plugin: 'com.jfrog.artifactory'
 
 description 'Corda node modules'
-
-// Import private compile time constants
-buildscript {
-    def properties = new Properties()
-    file("$projectDir/src/main/resources/build.properties").withInputStream { properties.load(it) }
-
-    ext.jolokia_version = properties.getProperty('jolokiaAgentVersion')
-}
 
 //noinspection GroovyAssignabilityCheck
 configurations {
@@ -41,6 +45,13 @@ sourceSets {
     }
 }
 
+jib.container {
+  mainClass = "net.corda.node.Corda"
+  args = ['--log-to-console', '--no-local-shell', '--config-file=/config/node.conf']
+  // The Groovy string needs to be converted to a `java.lang.String` below.
+  jvmFlags = ['-Xmx1g', "-javaagent:/app/libs/quasar-core-${quasar_version}-jdk8.jar".toString()]
+}
+
 // Use manual resource copying of log4j2.xml rather than source sets.
 // This prevents problems in IntelliJ with regard to duplicate source roots.
 processResources {
@@ -60,7 +71,7 @@ dependencies {
     compile project(":confidential-identities")
     compile project(':client:rpc')
     compile project(':tools:shell')
-    compile "net.corda.plugins:cordform-common:$gradle_plugins_version"
+    compile project(':tools:cliutils')
 
     // Log4J: logging framework (with SLF4J bindings)
     compile "org.apache.logging.log4j:log4j-slf4j-impl:${log4j_version}"
@@ -68,17 +79,21 @@ dependencies {
     compile "org.slf4j:jul-to-slf4j:$slf4j_version"
 
     compile "org.jetbrains.kotlin:kotlin-stdlib-jdk8:$kotlin_version"
+    runtime "org.jetbrains.kotlin:kotlin-stdlib-jre8:$kotlin_version"
     compile "org.jetbrains.kotlin:kotlin-reflect:$kotlin_version"
     testCompile "org.jetbrains.kotlin:kotlin-test:$kotlin_version"
 
     // Kryo: object graph serialization.
     compile "com.esotericsoftware:kryo:4.0.0"
-    compile "de.javakaffee:kryo-serializers:0.41"
+    compile "de.javakaffee:kryo-serializers:0.42"
 
     compile "com.google.guava:guava:$guava_version"
 
     // For caches rather than guava
     compile "com.github.ben-manes.caffeine:caffeine:$caffeine_version"
+
+    // For async logging
+    compile "com.lmax:disruptor:$disruptor_version"
 
     // JOpt: for command line flags.
     compile "net.sf.jopt-simple:jopt-simple:$jopt_simple_version"
@@ -93,9 +108,6 @@ dependencies {
         // Gains our proton-j version from core module.
         exclude group: 'org.apache.qpid', module: 'proton-j'
     }
-
-    // JAnsi: for drawing things to the terminal in nicely coloured ways.
-    compile "org.fusesource.jansi:jansi:$jansi_version"
 
     // Manifests: for reading stuff from the manifest file
     compile "com.jcabi:jcabi-manifests:$jcabi_manifests_version"
@@ -119,6 +131,7 @@ dependencies {
     testCompile project(':test-utils')
     testCompile project(':client:jfx')
     testCompile project(':finance')
+    testCompile project(':finance:isolated')
 
     // sample test schemas
     testCompile project(path: ':finance', configuration: 'testArtifacts')
@@ -155,6 +168,9 @@ dependencies {
     // Apache Shiro: authentication, authorization and session management.
     compile "org.apache.shiro:shiro-core:${shiro_version}"
 
+    //Picocli for command line interface
+    compile "info.picocli:picocli:$picocli_version"
+
     // Integration test helpers
     integrationTestCompile "junit:junit:$junit_version"
     integrationTestCompile "org.assertj:assertj-core:${assertj_version}"
@@ -175,6 +191,15 @@ dependencies {
 
     // Jolokia JVM monitoring agent, required to push logs through slf4j
     compile "org.jolokia:jolokia-jvm:${jolokia_version}:agent"
+    // Optional New Relic JVM reporter, used to push metrics to the configured account associated with a newrelic.yml configuration. See https://mvnrepository.com/artifact/com.palominolabs.metrics/metrics-new-relic
+    compile "com.palominolabs.metrics:metrics-new-relic:${metrics_new_relic_version}"
+
+    testCompile(project(':test-cli'))
+}
+
+tasks.withType(JavaCompile) {
+    // Resolves a Gradle warning about not scanning for pre-processors.
+    options.compilerArgs << '-proc:none'
 }
 
 task integrationTest(type: Test) {

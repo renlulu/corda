@@ -1,5 +1,7 @@
 package net.corda.core.transactions
 
+import net.corda.core.DeleteForDJVM
+import net.corda.core.KeepForDJVM
 import net.corda.core.contracts.*
 import net.corda.core.crypto.SecureHash
 import net.corda.core.crypto.TransactionSignature
@@ -21,6 +23,7 @@ import java.security.PublicKey
  * on the fly.
  */
 @CordaSerializable
+@KeepForDJVM
 data class NotaryChangeWireTransaction(
         /**
          * Contains all of the transaction components in serialized form.
@@ -30,6 +33,7 @@ data class NotaryChangeWireTransaction(
         val serializedComponents: List<OpaqueBytes>
 ) : CoreTransaction() {
     override val inputs: List<StateRef> = serializedComponents[INPUTS.ordinal].deserialize()
+    override val references: List<StateRef> = emptyList()
     override val notary: Party = serializedComponents[NOTARY.ordinal].deserialize()
     /** Identity of the notary service to reassign the states to.*/
     val newNotary: Party = serializedComponents[NEW_NOTARY.ordinal].deserialize()
@@ -61,12 +65,14 @@ data class NotaryChangeWireTransaction(
     }
 
     /** Resolves input states and builds a [NotaryChangeLedgerTransaction]. */
+    @DeleteForDJVM
     fun resolve(services: ServicesForResolution, sigs: List<TransactionSignature>): NotaryChangeLedgerTransaction {
         val resolvedInputs = services.loadStates(inputs.toSet()).toList()
         return NotaryChangeLedgerTransaction(resolvedInputs, notary, newNotary, id, sigs)
     }
 
     /** Resolves input states and builds a [NotaryChangeLedgerTransaction]. */
+    @DeleteForDJVM
     fun resolve(services: ServiceHub, sigs: List<TransactionSignature>) = resolve(services as ServicesForResolution, sigs)
 
     enum class Component {
@@ -82,6 +88,7 @@ data class NotaryChangeWireTransaction(
  * signatures are checked against the signers specified by input states' *participants* fields, so full resolution is
  * needed for signature verification.
  */
+@KeepForDJVM
 data class NotaryChangeLedgerTransaction(
         override val inputs: List<StateAndRef<ContractState>>,
         override val notary: Party,
@@ -92,6 +99,8 @@ data class NotaryChangeLedgerTransaction(
     init {
         checkEncumbrances()
     }
+
+    override val references: List<StateAndRef<ContractState>> = emptyList()
 
     /** We compute the outputs on demand by applying the notary field modification to the inputs */
     override val outputs: List<TransactionState<ContractState>>

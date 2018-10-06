@@ -16,6 +16,9 @@ import net.corda.core.transactions.SignedTransaction
  * While the signature must be retained, the notarisation request does not need to be transferred or stored anywhere - it
  * can be built from a [SignedTransaction] or a [CoreTransaction]. The notary can recompute it from the committed states index.
  *
+ * Reference inputs states are not included as a separate property in the [NotarisationRequest] as they are not
+ * consumed.
+ *
  * In case there is a need to prove that a party spent a particular state, the notary will:
  * 1) Locate the consuming transaction id in the index, along with all other states consumed in the same transaction.
  * 2) Build a [NotarisationRequest].
@@ -61,12 +64,18 @@ data class NotarisationPayload(val transaction: Any, val requestSignature: Notar
      * A helper for automatically casting the underlying [transaction] payload to a [SignedTransaction].
      * Should only be used by validating notaries.
      */
-    val signedTransaction get() = transaction as SignedTransaction
+    val signedTransaction get() = transaction as? SignedTransaction ?: throw exception()
+
     /**
      * A helper for automatically casting the underlying [transaction] payload to a [CoreTransaction].
      * Should only be used by non-validating notaries.
      */
-    val coreTransaction get() = transaction as CoreTransaction
+    val coreTransaction get() = transaction as? CoreTransaction ?: throw exception()
+
+    private fun exception() = IllegalArgumentException("Unexpected transaction type in the notarisation payload: " +
+            "${transaction::class.java}, it may be that there is a discrepancy between the configured notary type " +
+            "(validating/non-validating) and the one advertised on the network parameters."
+    )
 }
 
 /** Payload returned by the notary service flow to the client. */

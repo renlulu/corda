@@ -7,13 +7,7 @@ import com.nhaarman.mockito_kotlin.whenever
 import net.corda.client.rpc.RPCException
 import net.corda.core.CordaException
 import net.corda.core.CordaRuntimeException
-import net.corda.core.contracts.Amount
-import net.corda.core.contracts.Contract
-import net.corda.core.contracts.ContractAttachment
-import net.corda.core.contracts.ContractState
-import net.corda.core.contracts.PrivacySalt
-import net.corda.core.contracts.StateRef
-import net.corda.core.contracts.TransactionState
+import net.corda.core.contracts.*
 import net.corda.core.crypto.Crypto
 import net.corda.core.crypto.SecureHash
 import net.corda.core.crypto.secureRandomBytes
@@ -21,49 +15,25 @@ import net.corda.core.flows.FlowException
 import net.corda.core.identity.AbstractParty
 import net.corda.core.identity.CordaX500Name
 import net.corda.core.internal.AbstractAttachment
-import net.corda.core.internal.x500Name
-import net.corda.core.serialization.ConstructorForDeserialization
-import net.corda.core.serialization.CordaSerializable
-import net.corda.core.serialization.EncodingWhitelist
-import net.corda.core.serialization.MissingAttachmentsException
-import net.corda.core.serialization.SerializationContext
-import net.corda.core.serialization.SerializationFactory
+import net.corda.core.serialization.*
 import net.corda.core.transactions.LedgerTransaction
 import net.corda.core.utilities.OpaqueBytes
 import net.corda.node.serialization.amqp.AMQPServerSerializationScheme
-import net.corda.nodeapi.internal.DEV_INTERMEDIATE_CA
 import net.corda.nodeapi.internal.crypto.ContentSignerBuilder
-import net.corda.serialization.internal.AllWhitelist
-import net.corda.serialization.internal.CordaSerializationEncoding
-import net.corda.serialization.internal.EmptyWhitelist
-import net.corda.serialization.internal.GeneratedAttachment
+import net.corda.serialization.internal.*
 import net.corda.serialization.internal.amqp.SerializerFactory.Companion.isPrimitive
-import net.corda.serialization.internal.amqp.testutils.deserialize
-import net.corda.serialization.internal.amqp.testutils.serialize
-import net.corda.serialization.internal.amqp.testutils.testDefaultFactory
-import net.corda.serialization.internal.amqp.testutils.testDefaultFactoryNoEvolution
-import net.corda.serialization.internal.amqp.testutils.testSerializationContext
-import net.corda.serialization.internal.encodingNotPermittedFormat
+import net.corda.serialization.internal.amqp.testutils.*
 import net.corda.testing.contracts.DummyContract
 import net.corda.testing.core.BOB_NAME
 import net.corda.testing.core.SerializationEnvironmentRule
 import net.corda.testing.core.TestIdentity
 import net.corda.testing.internal.rigorousMock
 import org.apache.activemq.artemis.api.core.SimpleString
-import org.apache.qpid.proton.amqp.Decimal128
-import org.apache.qpid.proton.amqp.Decimal32
-import org.apache.qpid.proton.amqp.Decimal64
-import org.apache.qpid.proton.amqp.Symbol
-import org.apache.qpid.proton.amqp.UnsignedByte
-import org.apache.qpid.proton.amqp.UnsignedInteger
-import org.apache.qpid.proton.amqp.UnsignedLong
-import org.apache.qpid.proton.amqp.UnsignedShort
+import org.apache.qpid.proton.amqp.*
 import org.apache.qpid.proton.codec.DecoderImpl
 import org.apache.qpid.proton.codec.EncoderImpl
-import org.assertj.core.api.Assertions.assertThat
-import org.assertj.core.api.Assertions.assertThatExceptionOfType
-import org.assertj.core.api.Assertions.assertThatThrownBy
-import org.assertj.core.api.Assertions.catchThrowable
+import org.assertj.core.api.Assertions.*
+import org.bouncycastle.asn1.x500.X500Name
 import org.bouncycastle.cert.X509v2CRLBuilder
 import org.bouncycastle.cert.jcajce.JcaX509CRLConverter
 import org.bouncycastle.jce.provider.BouncyCastleProvider
@@ -79,20 +49,7 @@ import java.io.NotSerializableException
 import java.math.BigDecimal
 import java.math.BigInteger
 import java.security.cert.X509CRL
-import java.time.DayOfWeek
-import java.time.Duration
-import java.time.Instant
-import java.time.LocalDate
-import java.time.LocalDateTime
-import java.time.LocalTime
-import java.time.Month
-import java.time.MonthDay
-import java.time.OffsetDateTime
-import java.time.OffsetTime
-import java.time.Period
-import java.time.Year
-import java.time.YearMonth
-import java.time.ZonedDateTime
+import java.time.*
 import java.time.temporal.ChronoUnit
 import java.util.*
 import kotlin.reflect.full.superclasses
@@ -249,17 +206,21 @@ class SerializationOutputTests(private val compression: CordaSerializationEncodi
         if (compression != null) doReturn(true).whenever(it).acceptEncoding(compression)
     }
 
-    private fun defaultFactory() = SerializerFactory(
-            AllWhitelist, ClassLoader.getSystemClassLoader(),
-            EvolutionSerializerGetterTesting())
+    private fun defaultFactory(): SerializerFactory {
+        return SerializerFactory(
+                AllWhitelist,
+                ClassLoader.getSystemClassLoader(),
+                evolutionSerializerGetter = EvolutionSerializerGetterTesting()
+        )
+    }
 
     private inline fun <reified T : Any> serdes(obj: T,
                                                 factory: SerializerFactory = defaultFactory(),
                                                 freshDeserializationFactory: SerializerFactory = defaultFactory(),
                                                 expectedEqual: Boolean = true,
                                                 expectDeserializedEqual: Boolean = true): T {
-        val ser = SerializationOutput(factory, compression)
-        val bytes = ser.serialize(obj)
+        val ser = SerializationOutput(factory)
+        val bytes = ser.serialize(obj, compression)
 
         val decoder = DecoderImpl().apply {
             this.register(Envelope.DESCRIPTOR, Envelope.Companion)
@@ -280,14 +241,14 @@ class SerializationOutputTests(private val compression: CordaSerializationEncodi
             val result = decoder.readObject() as Envelope
             assertNotNull(result)
         }
-        val des = DeserializationInput(freshDeserializationFactory, encodingWhitelist)
-        val desObj = des.deserialize(bytes)
+        val des = DeserializationInput(freshDeserializationFactory)
+        val desObj = des.deserialize(bytes, testSerializationContext.withEncodingWhitelist(encodingWhitelist))
         assertTrue(Objects.deepEquals(obj, desObj) == expectedEqual)
 
         // Now repeat with a re-used factory
-        val ser2 = SerializationOutput(factory, compression)
-        val des2 = DeserializationInput(factory, encodingWhitelist)
-        val desObj2 = des2.deserialize(ser2.serialize(obj))
+        val ser2 = SerializationOutput(factory)
+        val des2 = DeserializationInput(factory)
+        val desObj2 = des2.deserialize(ser2.serialize(obj, compression), testSerializationContext.withEncodingWhitelist(encodingWhitelist))
         assertTrue(Objects.deepEquals(obj, desObj2) == expectedEqual)
         assertTrue(Objects.deepEquals(desObj, desObj2) == expectDeserializedEqual)
 
@@ -510,10 +471,10 @@ class SerializationOutputTests(private val compression: CordaSerializationEncodi
     @Test
     fun `class constructor is invoked on deserialisation`() {
         compression == null || return // Manipulation of serialized bytes is invalid if they're compressed.
-        val ser = SerializationOutput(SerializerFactory(AllWhitelist, ClassLoader.getSystemClassLoader()), compression)
-        val des = DeserializationInput(ser.serializerFactory, encodingWhitelist)
-        val serialisedOne = ser.serialize(NonZeroByte(1)).bytes
-        val serialisedTwo = ser.serialize(NonZeroByte(2)).bytes
+        val ser = SerializationOutput(SerializerFactory(AllWhitelist, ClassLoader.getSystemClassLoader()))
+        val des = DeserializationInput(ser.serializerFactory)
+        val serialisedOne = ser.serialize(NonZeroByte(1), compression).bytes
+        val serialisedTwo = ser.serialize(NonZeroByte(2), compression).bytes
 
         // Find the index that holds the value byte
         val valueIndex = serialisedOne.zip(serialisedTwo).mapIndexedNotNull { index, (oneByte, twoByte) ->
@@ -524,12 +485,12 @@ class SerializationOutputTests(private val compression: CordaSerializationEncodi
 
         // Double check
         copy[valueIndex] = 0x03
-        assertThat(des.deserialize(OpaqueBytes(copy), NonZeroByte::class.java, testSerializationContext).value).isEqualTo(3)
+        assertThat(des.deserialize(OpaqueBytes(copy), NonZeroByte::class.java, testSerializationContext.withEncodingWhitelist(encodingWhitelist)).value).isEqualTo(3)
 
         // Now use the forbidden value
         copy[valueIndex] = 0x00
         assertThatExceptionOfType(NotSerializableException::class.java).isThrownBy {
-            des.deserialize(OpaqueBytes(copy), NonZeroByte::class.java, testSerializationContext)
+            des.deserialize(OpaqueBytes(copy), NonZeroByte::class.java, testSerializationContext.withEncodingWhitelist(encodingWhitelist))
         }.withStackTraceContaining("Zero not allowed")
     }
 
@@ -546,6 +507,12 @@ class SerializationOutputTests(private val compression: CordaSerializationEncodi
     @Test
     fun `test annotation is inherited`() {
         val obj = InheritAnnotation("blah")
+        serdes(obj, SerializerFactory(EmptyWhitelist, ClassLoader.getSystemClassLoader()))
+    }
+
+    @Test
+    fun `generics from java are supported`() {
+        val obj = DummyOptional<String>("YES")
         serdes(obj, SerializerFactory(EmptyWhitelist, ClassLoader.getSystemClassLoader()))
     }
 
@@ -695,8 +662,8 @@ class SerializationOutputTests(private val compression: CordaSerializationEncodi
         val scheme = AMQPServerSerializationScheme(emptyList())
         val func = scheme::class.superclasses.single { it.simpleName == "AbstractAMQPSerializationScheme" }
                 .java.getDeclaredMethod("registerCustomSerializers",
-                                        SerializationContext::class.java,
-                                        SerializerFactory::class.java)
+                SerializationContext::class.java,
+                SerializerFactory::class.java)
         func.isAccessible = true
 
         val factory = SerializerFactory(AllWhitelist, ClassLoader.getSystemClassLoader())
@@ -927,6 +894,7 @@ class SerializationOutputTests(private val compression: CordaSerializationEncodi
 
     class GenericSubclass(param: OtherGeneric<String>) : GenericSuperclass<String>(param) {
         override fun equals(other: Any?): Boolean = other is GenericSubclass // This is a bit lame but we just want to check it doesn't throw exceptions
+        override fun hashCode(): Int = javaClass.hashCode()
     }
 
     @Test
@@ -1005,8 +973,11 @@ class SerializationOutputTests(private val compression: CordaSerializationEncodi
         assertSame(objCopy.a, objCopy.b)
     }
 
-    data class Spike private constructor(val a: String) {
+    class Spike private constructor(val a: String) {
         constructor() : this("a")
+
+        override fun equals(other: Any?): Boolean = other is Spike && other.a == this.a
+        override fun hashCode(): Int = a.hashCode()
     }
 
     @Test
@@ -1049,7 +1020,7 @@ class SerializationOutputTests(private val compression: CordaSerializationEncodi
     }
 
     private fun emptyCrl(): X509CRL {
-        val builder = X509v2CRLBuilder(CordaX500Name.build(DEV_INTERMEDIATE_CA.certificate.issuerX500Principal).x500Name, Date())
+        val builder = X509v2CRLBuilder(X500Name("CN=Corda Root CA, O=R3 HoldCo LLC, L=New York, C=US"), Date())
         val provider = BouncyCastleProvider()
         val crlHolder = builder.build(ContentSignerBuilder.build(Crypto.RSA_SHA256, Crypto.generateKeyPair(Crypto.RSA_SHA256).private, provider))
         return JcaX509CRLConverter().setProvider(provider).getCRL(crlHolder)
@@ -1067,7 +1038,7 @@ class SerializationOutputTests(private val compression: CordaSerializationEncodi
         serdes(obj, factory, factory2)
     }
 
-    data class ByteArrays(val a: ByteArray, val b: ByteArray)
+    class ByteArrays(val a: ByteArray, val b: ByteArray)
 
     @Test
     fun `test byte arrays not reference counted`() {
@@ -1201,7 +1172,7 @@ class SerializationOutputTests(private val compression: CordaSerializationEncodi
     }
 
     //
-    // Example stacktrace that this test is tryint to reproduce
+    // Example stacktrace that this test is trying to reproduce
     //
     // java.lang.IllegalArgumentException:
     //      net.corda.core.contracts.TransactionState ->
@@ -1218,10 +1189,6 @@ class SerializationOutputTests(private val compression: CordaSerializationEncodi
     //
     @Test
     fun reproduceWrongNumberOfArguments() {
-        val field = SerializerFactory::class.java.getDeclaredField("serializersByType").apply {
-            this.isAccessible = true
-        }
-
         data class C(val a: Amount<Currency>)
 
         val factory = testDefaultFactoryNoEvolution()
@@ -1231,7 +1198,7 @@ class SerializationOutputTests(private val compression: CordaSerializationEncodi
         val c = C(Amount(100, BigDecimal("1.5"), Currency.getInstance("USD")))
 
         // were the issue not fixed we'd blow up here
-        SerializationOutput(factory, compression).serialize(c)
+        SerializationOutput(factory).serialize(c, compression)
     }
 
     @Test
@@ -1239,9 +1206,9 @@ class SerializationOutputTests(private val compression: CordaSerializationEncodi
         compression ?: return
         val factory = defaultFactory()
         val data = ByteArray(12345).also { Random(0).nextBytes(it) }.let { it + it }
-        val compressed = SerializationOutput(factory, compression).serialize(data)
+        val compressed = SerializationOutput(factory).serialize(data, compression)
         assertEquals(.5, compressed.size.toDouble() / data.size, .03)
-        assertArrayEquals(data, DeserializationInput(factory, encodingWhitelist).deserialize(compressed))
+        assertArrayEquals(data, DeserializationInput(factory).deserialize(compressed, testSerializationContext.withEncodingWhitelist(encodingWhitelist)))
     }
 
     @Test
@@ -1249,9 +1216,9 @@ class SerializationOutputTests(private val compression: CordaSerializationEncodi
         compression ?: return
         val factory = defaultFactory()
         doReturn(false).whenever(encodingWhitelist).acceptEncoding(compression)
-        val compressed = SerializationOutput(factory, compression).serialize("whatever")
-        val input = DeserializationInput(factory, encodingWhitelist)
-        catchThrowable { input.deserialize(compressed) }.run {
+        val compressed = SerializationOutput(factory).serialize("whatever", compression)
+        val input = DeserializationInput(factory)
+        catchThrowable { input.deserialize(compressed, testSerializationContext.withEncodingWhitelist(encodingWhitelist)) }.run {
             assertSame(NotSerializableException::class.java, javaClass)
             assertEquals(encodingNotPermittedFormat.format(compression), message)
         }
@@ -1358,12 +1325,12 @@ class SerializationOutputTests(private val compression: CordaSerializationEncodi
     }
 
     interface DataClassByInterface<V> {
-        val v : V
+        val v: V
     }
 
     @Test
     fun dataClassBy() {
-        data class C (val s: String) : DataClassByInterface<String> {
+        data class C(val s: String) : DataClassByInterface<String> {
             override val v: String = "-- $s"
         }
 
@@ -1376,10 +1343,21 @@ class SerializationOutputTests(private val compression: CordaSerializationEncodi
         val bytes = SerializationOutput(testDefaultFactory()).serialize(i)
 
         try {
-            val i2 = DeserializationInput(testDefaultFactory()).deserialize(bytes)
-        } catch (e : NotSerializableException) {
-            throw Error ("Deserializing serialized \$C should not throw")
+            DeserializationInput(testDefaultFactory()).deserialize(bytes)
+        } catch (e: NotSerializableException) {
+            throw Error("Deserializing serialized \$C should not throw")
         }
+    }
+
+    @Test
+    fun `compression reduces number of bytes significantly`() {
+        val ser = SerializationOutput(SerializerFactory(AllWhitelist, ClassLoader.getSystemClassLoader()))
+        val obj = ByteArray(20000)
+        val uncompressedSize = ser.serialize(obj).bytes.size
+        val compressedSize = ser.serialize(obj, CordaSerializationEncoding.SNAPPY).bytes.size
+        // Ordinarily this might be considered high maintenance, but we promised wire compatibility, so they'd better not change!
+        assertEquals(20059, uncompressedSize)
+        assertEquals(1018, compressedSize)
     }
 }
 

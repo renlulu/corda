@@ -8,16 +8,14 @@ import net.corda.core.internal.VisibleForTesting
 import net.corda.core.internal.bufferUntilSubscribed
 import net.corda.core.internal.concurrent.doneFuture
 import net.corda.core.messaging.DataFeed
-import net.corda.core.serialization.SerializationDefaults
-import net.corda.core.serialization.SerializedBytes
-import net.corda.core.serialization.SingletonSerializeAsToken
-import net.corda.core.serialization.deserialize
-import net.corda.core.serialization.serialize
+import net.corda.core.serialization.*
 import net.corda.core.toFuture
 import net.corda.core.transactions.CoreTransaction
 import net.corda.core.transactions.SignedTransaction
 import net.corda.node.services.api.WritableTransactionStorage
+import net.corda.node.services.statemachine.FlowStateMachineImpl
 import net.corda.node.utilities.AppendOnlyPersistentMapBase
+import net.corda.node.utilities.NamedCacheFactory
 import net.corda.node.utilities.WeightBasedAppendOnlyPersistentMap
 import net.corda.nodeapi.internal.persistence.CordaPersistence
 import net.corda.nodeapi.internal.persistence.NODE_DATABASE_PREFIX
@@ -26,12 +24,7 @@ import net.corda.nodeapi.internal.persistence.wrapWithDatabaseTransaction
 import org.apache.commons.lang.ArrayUtils.EMPTY_BYTE_ARRAY
 import rx.Observable
 import rx.subjects.PublishSubject
-import java.io.Serializable
-import javax.persistence.Column
-import javax.persistence.Entity
-import javax.persistence.Id
-import javax.persistence.Lob
-import javax.persistence.Table
+import javax.persistence.*
 
 // cache value type to just store the immutable bits of a signed transaction plus conversion helpers
 typealias TxCacheValue = Pair<SerializedBytes<CoreTransaction>, List<TransactionSignature>>
@@ -39,7 +32,7 @@ typealias TxCacheValue = Pair<SerializedBytes<CoreTransaction>, List<Transaction
 fun TxCacheValue.toSignedTx() = SignedTransaction(this.first, this.second)
 fun SignedTransaction.toTxCacheValue() = TxCacheValue(this.txBits, this.sigs)
 
-class DBTransactionStorage(cacheSizeBytes: Long, private val database: CordaPersistence) : WritableTransactionStorage, SingletonSerializeAsToken() {
+class DBTransactionStorage(private val database: CordaPersistence, cacheFactory: NamedCacheFactory) : WritableTransactionStorage, SingletonSerializeAsToken() {
 
     @Entity
     @Table(name = "${NODE_DATABASE_PREFIX}transactions")
@@ -48,15 +41,20 @@ class DBTransactionStorage(cacheSizeBytes: Long, private val database: CordaPers
             @Column(name = "tx_id", length = 64, nullable = false)
             var txId: String = "",
 
+            @Column(name = "state_machine_run_id", length = 36, nullable = true)
+            var stateMachineRunId: String? = "",
+
             @Lob
             @Column(name = "transaction_value", nullable = false)
             var transaction: ByteArray = EMPTY_BYTE_ARRAY
-    ) : Serializable
+    )
 
     private companion object {
-        fun createTransactionsMap(maxSizeInBytes: Long)
+        fun createTransactionsMap(cacheFactory: NamedCacheFactory)
                 : AppendOnlyPersistentMapBase<SecureHash, TxCacheValue, DBTransaction, String> {
             return WeightBasedAppendOnlyPersistentMap<SecureHash, TxCacheValue, DBTransaction, String>(
+                    cacheFactory = cacheFactory,
+                    name = "DBTransactionStorage_transactions",
                     toPersistentEntityKey = { it.toString() },
                     fromPersistentEntity = {
                         Pair(SecureHash.parse(it.txId),
@@ -66,11 +64,11 @@ class DBTransactionStorage(cacheSizeBytes: Long, private val database: CordaPers
                     toPersistentEntity = { key: SecureHash, value: TxCacheValue ->
                         DBTransaction().apply {
                             txId = key.toString()
+                            stateMachineRunId = FlowStateMachineImpl.currentStateMachine()?.id?.uuid?.toString()
                             transaction = value.toSignedTx().serialize(context = SerializationDefaults.STORAGE_CONTEXT).bytes
                         }
                     },
                     persistentEntityClass = DBTransaction::class.java,
-                    maxWeight = maxSizeInBytes,
                     weighingFunc = { hash, tx -> hash.size + weighTx(tx) }
             )
         }
@@ -89,7 +87,7 @@ class DBTransactionStorage(cacheSizeBytes: Long, private val database: CordaPers
         }
     }
 
-    private val txStorage = ThreadBox(createTransactionsMap(cacheSizeBytes))
+    private val txStorage = ThreadBox(createTransactionsMap(cacheFactory))
 
     override fun addTransaction(transaction: SignedTransaction): Boolean = database.transaction {
         txStorage.locked {

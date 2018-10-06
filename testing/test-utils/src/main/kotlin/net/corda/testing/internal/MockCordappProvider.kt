@@ -3,11 +3,11 @@ package net.corda.testing.internal
 import net.corda.core.contracts.ContractClassName
 import net.corda.core.cordapp.Cordapp
 import net.corda.core.crypto.SecureHash
-import net.corda.core.internal.TEST_UPLOADER
+import net.corda.core.internal.DEPLOYED_CORDAPP_UPLOADER
 import net.corda.core.internal.cordapp.CordappImpl
 import net.corda.core.node.services.AttachmentId
 import net.corda.core.node.services.AttachmentStorage
-import net.corda.node.internal.cordapp.CordappLoader
+import net.corda.node.cordapp.CordappLoader
 import net.corda.node.internal.cordapp.CordappProviderImpl
 import net.corda.testing.services.MockAttachmentStorage
 import java.nio.file.Paths
@@ -16,12 +16,10 @@ import java.util.*
 class MockCordappProvider(
         cordappLoader: CordappLoader,
         attachmentStorage: AttachmentStorage,
-        whitelistedContractImplementations: Map<String, List<AttachmentId>>,
         cordappConfigProvider: MockCordappConfigProvider = MockCordappConfigProvider()
-) : CordappProviderImpl(cordappLoader, cordappConfigProvider, attachmentStorage, whitelistedContractImplementations) {
-    constructor(cordappLoader: CordappLoader, attachmentStorage: AttachmentStorage, whitelistedContractImplementations: Map<String, List<AttachmentId>>) : this(cordappLoader, attachmentStorage, whitelistedContractImplementations, MockCordappConfigProvider())
+) : CordappProviderImpl(cordappLoader, cordappConfigProvider, attachmentStorage) {
 
-    val cordappRegistry = mutableListOf<Pair<Cordapp, AttachmentId>>()
+    private val cordappRegistry = mutableListOf<Pair<Cordapp, AttachmentId>>()
 
     fun addMockCordapp(contractClassName: ContractClassName, attachments: MockAttachmentStorage) {
         val cordapp = CordappImpl(
@@ -35,6 +33,7 @@ class MockCordappProvider(
                 serializationCustomSerializers = emptyList(),
                 customSchemas = emptySet(),
                 jarPath = Paths.get("").toUri().toURL(),
+                info = CordappImpl.Info.UNKNOWN,
                 allFlows = emptyList(),
                 jarHash = SecureHash.allOnesHash)
         if (cordappRegistry.none { it.first.contractClassNames.contains(contractClassName) }) {
@@ -42,8 +41,9 @@ class MockCordappProvider(
         }
     }
 
-    override fun getContractAttachmentID(contractClassName: ContractClassName): AttachmentId? = cordappRegistry.find { it.first.contractClassNames.contains(contractClassName) }?.second
-            ?: super.getContractAttachmentID(contractClassName)
+    override fun getContractAttachmentID(contractClassName: ContractClassName): AttachmentId? {
+        return cordappRegistry.find { it.first.contractClassNames.contains(contractClassName) }?.second ?: super.getContractAttachmentID(contractClassName)
+    }
 
     private fun findOrImportAttachment(contractClassNames: List<ContractClassName>, data: ByteArray, attachments: MockAttachmentStorage): AttachmentId {
         val existingAttachment = attachments.files.filter {
@@ -52,7 +52,7 @@ class MockCordappProvider(
         return if (!existingAttachment.isEmpty()) {
             existingAttachment.keys.first()
         } else {
-            attachments.importContractAttachment(contractClassNames, TEST_UPLOADER, data.inputStream())
+            attachments.importContractAttachment(contractClassNames, DEPLOYED_CORDAPP_UPLOADER, data.inputStream())
         }
     }
 }

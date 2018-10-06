@@ -2,23 +2,32 @@ buildscript {
     Properties constants = new Properties()
     file("../constants.properties").withInputStream { constants.load(it) }
 
-    ext.guava_version = constants.getProperty("guavaVersion")
+    ext {
+        guava_version = constants.getProperty("guavaVersion")
+        assertj_version = '3.9.1'
+        junit_version = '4.12'
+    }
 }
-
-apply plugin: 'maven'
-apply plugin: 'java'
 
 repositories {
     mavenLocal()
     mavenCentral()
 }
 
-dependencies {
-    // Add the top-level projects ONLY to the host project.
-    runtime project.childProjects.values().collect {
-        project(it.path)
+allprojects {
+    tasks.withType(Test) {
+        // Prevent the project from creating temporary files outside of the build directory.
+        systemProperty 'java.io.tmpdir', buildDir.absolutePath
     }
 }
 
-// Don't create an empty jar. The plugins are now in child projects.
-jar.enabled = false
+configurations {
+    runtime
+}
+
+dependencies {
+    // Add the top-level projects ONLY to the host project.
+    runtime project.childProjects.collect { n, p ->
+        project(p.path)
+    }
+}

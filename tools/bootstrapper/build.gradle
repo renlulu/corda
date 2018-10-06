@@ -1,43 +1,42 @@
-apply plugin: 'us.kirchmeier.capsule'
+apply plugin: 'kotlin'
 apply plugin: 'net.corda.plugins.publish-utils'
 apply plugin: 'com.jfrog.artifactory'
 
 description 'Network bootstrapper'
 
-configurations {
-    runtimeArtifacts
-}
-
 dependencies {
-    compile "org.slf4j:slf4j-nop:$slf4j_version"
+    compile project(':node-api')
+    compile project(':tools:cliutils')
+    compile "org.apache.logging.log4j:log4j-slf4j-impl:$log4j_version"
+
+    testCompile(project(':test-utils')) {
+        exclude group: 'org.apache.logging.log4j', module: 'log4j-slf4j-impl'
+    }
+
+    testCompile(project(':test-cli'))
 }
 
-task buildBootstrapperJar(type: FatCapsule, dependsOn: project(':node-api').compileJava) {
-    applicationClass 'net.corda.nodeapi.internal.network.NetworkBootstrapper'
-    archiveName = "network-bootstrapper-${version}.jar"
-    capsuleManifest {
-        applicationVersion = corda_release_version
-        systemProperties['visualvm.display.name'] = 'Network Bootstrapper'
-        minJavaVersion = '1.8.0'
-        jvmArgs = ['-XX:+UseG1GC']
+processResources {
+    from file("$rootDir/config/dev/log4j2.xml")
+}
+
+jar {
+    from(configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) }) {
+        exclude "META-INF/*.SF"
+        exclude "META-INF/*.DSA"
+        exclude "META-INF/*.RSA"
     }
     from(project(':node:capsule').tasks['buildCordaJAR']) {
         rename 'corda-(.*)', 'corda.jar'
     }
-    applicationSource = files(
-            project(':node-api').configurations.runtime,
-            project(':node-api').jar
-    )
-}
-
-artifacts {
-    runtimeArtifacts buildBootstrapperJar
-    publish buildBootstrapperJar {
-        classifier ""
+    baseName = "network-bootstrapper"
+    manifest {
+        attributes(
+                'Main-Class': 'net.corda.bootstrapper.MainKt'
+        )
     }
 }
 
 publish {
-    name 'tools-network-bootstrapper'
-    disableDefaultJar = true
+    name 'corda-tools-network-bootstrapper'
 }

@@ -1,5 +1,6 @@
 package net.corda.core.messaging
 
+import net.corda.core.CordaInternal
 import net.corda.core.concurrent.CordaFuture
 import net.corda.core.context.InvocationContext
 import net.corda.core.contracts.ContractState
@@ -21,7 +22,6 @@ import net.corda.core.serialization.CordaSerializable
 import net.corda.core.transactions.SignedTransaction
 import net.corda.core.utilities.Try
 import rx.Observable
-import rx.subjects.PublishSubject
 import java.io.IOException
 import java.io.InputStream
 import java.security.PublicKey
@@ -33,15 +33,16 @@ import java.time.Instant
  */
 @CordaSerializable
 data class StateMachineInfo @JvmOverloads constructor(
-        /** A univerally unique ID ([java.util.UUID]) representing this particular instance of the named flow. */
+        /** A universally unique ID ([java.util.UUID]) representing this particular instance of the named flow. */
         val id: StateMachineRunId,
         /** The JVM class name of the flow code. */
         val flowLogicClassName: String,
         /**
          * An object representing information about the initiator of the flow. Note that this field is
-         * superceded by the [invocationContext] property, which has more detail.
+         * superseded by the [invocationContext] property, which has more detail.
          */
-        @Deprecated("There is more info available using 'context'") val initiator: FlowInitiator,
+        @Deprecated("There is more info available using 'invocationContext'")
+        val initiator: FlowInitiator,
         /** A [DataFeed] of the current progress step as a human readable string, and updates to that string. */
         val progressTrackerStepAndUpdates: DataFeed<String, String>?,
         /** An [InvocationContext] describing why and by whom the flow was started. */
@@ -75,7 +76,8 @@ sealed class StateMachineUpdate {
 // DOCSTART 1
 /**
  * Data class containing information about the scheduled network parameters update. The info is emitted every time node
- * receives network map with [ParametersUpdate] which wasn't seen before. For more information see: [CordaRPCOps.networkParametersFeed] and [CordaRPCOps.acceptNewNetworkParameters].
+ * receives network map with [ParametersUpdate] which wasn't seen before. For more information see: [CordaRPCOps.networkParametersFeed]
+ * and [CordaRPCOps.acceptNewNetworkParameters].
  * @property hash new [NetworkParameters] hash
  * @property parameters new [NetworkParameters] data structure
  * @property description description of the update
@@ -95,12 +97,6 @@ data class StateMachineTransactionMapping(val stateMachineRunId: StateMachineRun
 
 /** RPC operations that the node exposes to clients. */
 interface CordaRPCOps : RPCOps {
-    /**
-     * Returns the RPC protocol version, which is the same the node's Platform Version. Exists since version 1 so guaranteed
-     * to be present.
-     */
-    override val protocolVersion: Int get() = nodeInfo().platformVersion
-
     /** Returns a list of currently in-progress state machine infos. */
     fun stateMachinesSnapshot(): List<StateMachineInfo>
 
@@ -195,6 +191,15 @@ interface CordaRPCOps : RPCOps {
     fun internalVerifiedTransactionsSnapshot(): List<SignedTransaction>
 
     /**
+     * @suppress Returns the full transaction for the provided ID
+     *
+     * TODO This method should be removed once SGX work is finalised and the design of the corresponding API using [FilteredTransaction] can be started
+     */
+    @CordaInternal
+    @Deprecated("This method is intended only for internal use and will be removed from the public API soon.")
+    fun internalFindVerifiedTransaction(txnId: SecureHash): SignedTransaction?
+
+    /**
      * @suppress Returns a data feed of all recorded transactions and an observable of future recorded ones.
      *
      * TODO This method should be removed once SGX work is finalised and the design of the corresponding API using [FilteredTransaction] can be started
@@ -222,6 +227,9 @@ interface CordaRPCOps : RPCOps {
      */
     @RPCReturnsObservables
     fun networkMapFeed(): DataFeed<List<NodeInfo>, NetworkMapCache.MapChange>
+
+    /** Returns the network parameters the node is operating under. */
+    val networkParameters: NetworkParameters
 
     /**
      * Returns [DataFeed] object containing information on currently scheduled parameters update (null if none are currently scheduled)
@@ -358,8 +366,23 @@ interface CordaRPCOps : RPCOps {
      */
     fun nodeInfoFromParty(party: AbstractParty): NodeInfo?
 
-    /** Clear all network map data from local node cache. */
+    /**
+     * Clear all network map data from local node cache. Notice that after invoking this method your node will lose
+     * network map data and effectively won't be able to start any flow with the peers until network map is downloaded
+     * again on next poll - from `additional-node-infos` directory or from network map server. It depends on the
+     * polling interval when it happens. You can also use [refreshNetworkMapCache] to force next fetch from network map server
+     * (not from directory - it will happen automatically).
+     * If you run local test deployment and want clear view of the network, you may want to clear also `additional-node-infos`
+     * directory, because cache can be repopulated from there.
+     */
     fun clearNetworkMapCache()
+
+    /**
+     * Poll network map server if available for the network map. Notice that you need to have `compatibilityZone`
+     * or `networkServices` configured. This is normally done automatically on the regular time interval, but you may wish to
+     * have the fresh view of network earlier.
+     */
+    fun refreshNetworkMapCache()
 
     /** Sets the value of the node's flows draining mode.
      * If this mode is [enabled], the node will reject new flows through RPC, ignore scheduled flows, and do not process
@@ -381,38 +404,20 @@ interface CordaRPCOps : RPCOps {
      * This does not wait for flows to be completed.
      */
     fun shutdown()
-}
 
-/**
- * Returns a [DataFeed] that keeps track on the count of pending flows.
- */
-fun CordaRPCOps.pendingFlowsCount(): DataFeed<Int, Pair<Int, Int>> {
+    /**
+     * Shuts the node down. Returns immediately.
+     * @param drainPendingFlows whether the node will wait for pending flows to be completed before exiting. While draining, new flows from RPC will be rejected.
+     */
+    fun terminate(drainPendingFlows: Boolean = false)
 
-    val stateMachineState = stateMachinesFeed()
-    var pendingFlowsCount = stateMachineState.snapshot.size
-    var completedFlowsCount = 0
-    val updates = PublishSubject.create<Pair<Int, Int>>()
-    stateMachineState
-            .updates
-            .doOnNext { update ->
-                when (update) {
-                    is StateMachineUpdate.Added -> {
-                        pendingFlowsCount++
-                        updates.onNext(completedFlowsCount to pendingFlowsCount)
-                    }
-                    is StateMachineUpdate.Removed -> {
-                        completedFlowsCount++
-                        updates.onNext(completedFlowsCount to pendingFlowsCount)
-                        if (completedFlowsCount == pendingFlowsCount) {
-                            updates.onCompleted()
-                        }
-                    }
-                }
-            }.subscribe()
-    if (completedFlowsCount == 0) {
-        updates.onCompleted()
-    }
-    return DataFeed(pendingFlowsCount, updates)
+    /**
+     * Returns whether the node is waiting for pending flows to complete before shutting down.
+     * Disabling draining mode cancels this state.
+     *
+     * @return whether the node will shutdown when the pending flows count reaches zero.
+     */
+    fun isWaitingForShutdown(): Boolean
 }
 
 inline fun <reified T : ContractState> CordaRPCOps.vaultQueryBy(criteria: QueryCriteria = QueryCriteria.VaultQueryCriteria(),

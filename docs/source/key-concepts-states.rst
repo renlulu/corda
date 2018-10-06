@@ -7,12 +7,15 @@ States
    * *States are evolved by marking the current state as historic and creating an updated state*
    * *Each node has a vault where it stores any relevant states to itself*
 
-Video
------
-.. raw:: html
+.. only:: htmlmode
 
-    <iframe src="https://player.vimeo.com/video/213812054" width="640" height="360" frameborder="0" webkitallowfullscreen mozallowfullscreen allowfullscreen></iframe>
-    <p></p>
+   Video
+   -----
+   .. raw:: html
+   
+       <iframe src="https://player.vimeo.com/video/213812054" width="640" height="360" frameborder="0" webkitallowfullscreen mozallowfullscreen allowfullscreen></iframe>
+       <p></p>
+
 
 Overview
 --------
@@ -57,3 +60,12 @@ is aware of, and which it considers to be relevant to itself:
 
 We can think of the ledger from each node's point of view as the set of all the current (i.e. non-historic) states that
 it is aware of.
+
+Reference states
+----------------
+
+Not all states need to be updated by the parties which use them. In the case of reference data, there is a common pattern
+where one party creates reference data, which is then used (but not updated) by other parties. For this use-case, the
+states containing reference data are referred to as "reference states". Syntactically, reference states are no different
+to regular states. However, they are treated different by Corda transactions. See :doc:`key-concepts-transactions` for
+more details.

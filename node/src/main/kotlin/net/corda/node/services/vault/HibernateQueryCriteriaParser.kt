@@ -7,6 +7,13 @@ import net.corda.core.internal.uncheckedCast
 import net.corda.core.node.services.Vault
 import net.corda.core.node.services.VaultQueryException
 import net.corda.core.node.services.vault.*
+import net.corda.core.node.services.vault.BinaryComparisonOperator.*
+import net.corda.core.node.services.vault.CollectionOperator.*
+import net.corda.core.node.services.vault.ColumnPredicate.*
+import net.corda.core.node.services.vault.EqualityComparisonOperator.*
+import net.corda.core.node.services.vault.LikenessOperator.*
+import net.corda.core.node.services.vault.NullOperator.IS_NULL
+import net.corda.core.node.services.vault.NullOperator.NOT_NULL
 import net.corda.core.node.services.vault.QueryCriteria.CommonQueryCriteria
 import net.corda.core.schemas.PersistentState
 import net.corda.core.schemas.PersistentStateRef
@@ -33,7 +40,9 @@ abstract class AbstractQueryCriteriaParser<Q : GenericQueryCriteria<Q,P>, in P: 
         val leftPredicates = parse(left)
         val rightPredicates = parse(right)
 
-        val orPredicate = criteriaBuilder.or(*leftPredicates.toTypedArray(), *rightPredicates.toTypedArray())
+        val leftAnd = criteriaBuilder.and(*leftPredicates.toTypedArray())
+        val rightAnd = criteriaBuilder.and(*rightPredicates.toTypedArray())
+        val orPredicate = criteriaBuilder.or(leftAnd,rightAnd)
         predicateSet.add(orPredicate)
 
         return predicateSet
@@ -52,52 +61,91 @@ abstract class AbstractQueryCriteriaParser<Q : GenericQueryCriteria<Q,P>, in P: 
 
     protected fun columnPredicateToPredicate(column: Path<out Any?>, columnPredicate: ColumnPredicate<*>): Predicate {
         return when (columnPredicate) {
-            is ColumnPredicate.EqualityComparison -> {
-                val literal = columnPredicate.rightLiteral
-                when (columnPredicate.operator) {
-                    EqualityComparisonOperator.EQUAL -> criteriaBuilder.equal(column, literal)
-                    EqualityComparisonOperator.NOT_EQUAL -> criteriaBuilder.notEqual(column, literal)
-                }
-            }
-            is ColumnPredicate.BinaryComparison -> {
-                val literal: Comparable<Any?>? = uncheckedCast(columnPredicate.rightLiteral)
-                @Suppress("UNCHECKED_CAST")
-                column as Path<Comparable<Any?>?>
-                when (columnPredicate.operator) {
-                    BinaryComparisonOperator.GREATER_THAN -> criteriaBuilder.greaterThan(column, literal)
-                    BinaryComparisonOperator.GREATER_THAN_OR_EQUAL -> criteriaBuilder.greaterThanOrEqualTo(column, literal)
-                    BinaryComparisonOperator.LESS_THAN -> criteriaBuilder.lessThan(column, literal)
-                    BinaryComparisonOperator.LESS_THAN_OR_EQUAL -> criteriaBuilder.lessThanOrEqualTo(column, literal)
-                }
-            }
-            is ColumnPredicate.Likeness -> {
-                @Suppress("UNCHECKED_CAST")
-                column as Path<String?>
-                when (columnPredicate.operator) {
-                    LikenessOperator.LIKE -> criteriaBuilder.like(column, columnPredicate.rightLiteral)
-                    LikenessOperator.NOT_LIKE -> criteriaBuilder.notLike(column, columnPredicate.rightLiteral)
-                }
-            }
-            is ColumnPredicate.CollectionExpression -> {
-                when (columnPredicate.operator) {
-                    CollectionOperator.IN -> column.`in`(columnPredicate.rightLiteral)
-                    CollectionOperator.NOT_IN -> criteriaBuilder.not(column.`in`(columnPredicate.rightLiteral))
-                }
-            }
-            is ColumnPredicate.Between -> {
-                @Suppress("UNCHECKED_CAST")
-                column as Path<Comparable<Any?>?>
-                val fromLiteral: Comparable<Any?>? = uncheckedCast(columnPredicate.rightFromLiteral)
-                val toLiteral: Comparable<Any?>? = uncheckedCast(columnPredicate.rightToLiteral)
-                criteriaBuilder.between(column, fromLiteral, toLiteral)
-            }
-            is ColumnPredicate.NullExpression -> {
-                when (columnPredicate.operator) {
-                    NullOperator.IS_NULL -> criteriaBuilder.isNull(column)
-                    NullOperator.NOT_NULL -> criteriaBuilder.isNotNull(column)
-                }
-            }
+            is EqualityComparison -> equalityComparisonToPredicate(column, columnPredicate)
+            is BinaryComparison -> binaryComparisonToPredicate(column, columnPredicate)
+            is Likeness -> likeComparisonToPredicate(column, columnPredicate)
+            is CollectionExpression -> collectionComparisonToPredicate(column, columnPredicate)
+            is Between -> betweenComparisonToPredicate(column, columnPredicate)
+            is NullExpression -> nullComparisonToPredicate(column, columnPredicate)
             else -> throw VaultQueryException("Not expecting $columnPredicate")
+        }
+    }
+
+    private fun equalityComparisonToPredicate(column: Path<out Any?>, columnPredicate: EqualityComparison<*>): Predicate {
+        val literal = columnPredicate.rightLiteral
+        return if (literal is String) {
+            @Suppress("UNCHECKED_CAST")
+            column as Path<String?>
+            when (columnPredicate.operator) {
+                EQUAL -> criteriaBuilder.equal(column, literal)
+                EQUAL_IGNORE_CASE -> criteriaBuilder.equal(criteriaBuilder.upper(column), literal.toUpperCase())
+                NOT_EQUAL -> criteriaBuilder.notEqual(column, literal)
+                NOT_EQUAL_IGNORE_CASE -> criteriaBuilder.notEqual(criteriaBuilder.upper(column), literal.toUpperCase())
+            }
+        } else {
+            when (columnPredicate.operator) {
+                EQUAL, EQUAL_IGNORE_CASE -> criteriaBuilder.equal(column, literal)
+                NOT_EQUAL, NOT_EQUAL_IGNORE_CASE -> criteriaBuilder.notEqual(column, literal)
+            }
+        }
+    }
+
+    private fun binaryComparisonToPredicate(column: Path<out Any?>, columnPredicate: BinaryComparison<*>): Predicate {
+        val literal: Comparable<Any?>? = uncheckedCast(columnPredicate.rightLiteral)
+        @Suppress("UNCHECKED_CAST")
+        column as Path<Comparable<Any?>?>
+        return when (columnPredicate.operator) {
+            GREATER_THAN -> criteriaBuilder.greaterThan(column, literal)
+            GREATER_THAN_OR_EQUAL -> criteriaBuilder.greaterThanOrEqualTo(column, literal)
+            LESS_THAN -> criteriaBuilder.lessThan(column, literal)
+            LESS_THAN_OR_EQUAL -> criteriaBuilder.lessThanOrEqualTo(column, literal)
+        }
+    }
+
+    private fun likeComparisonToPredicate(column: Path<out Any?>, columnPredicate: Likeness): Predicate {
+        @Suppress("UNCHECKED_CAST")
+        column as Path<String?>
+        return when (columnPredicate.operator) {
+            LIKE -> criteriaBuilder.like(column, columnPredicate.rightLiteral)
+            LIKE_IGNORE_CASE -> criteriaBuilder.like(criteriaBuilder.upper(column), columnPredicate.rightLiteral.toUpperCase())
+            NOT_LIKE -> criteriaBuilder.notLike(column, columnPredicate.rightLiteral)
+            NOT_LIKE_IGNORE_CASE -> criteriaBuilder.notLike(criteriaBuilder.upper(column), columnPredicate.rightLiteral.toUpperCase())
+        }
+    }
+
+    private fun collectionComparisonToPredicate(column: Path<out Any?>, columnPredicate: CollectionExpression<*>): Predicate {
+        val literal = columnPredicate.rightLiteral
+        return if (literal.any { it is String }) {
+            @Suppress("UNCHECKED_CAST")
+            column as Path<String?>
+            @Suppress("UNCHECKED_CAST")
+            literal as Collection<String>
+            when (columnPredicate.operator) {
+                IN -> column.`in`(literal)
+                IN_IGNORE_CASE -> criteriaBuilder.upper(column).`in`(literal.map { it.toUpperCase() })
+                NOT_IN -> criteriaBuilder.not(column.`in`(literal))
+                NOT_IN_IGNORE_CASE -> criteriaBuilder.not(criteriaBuilder.upper(column).`in`(literal.map { it.toUpperCase() }))
+            }
+        } else {
+            when (columnPredicate.operator) {
+                IN, IN_IGNORE_CASE -> column.`in`(literal)
+                NOT_IN, NOT_IN_IGNORE_CASE -> criteriaBuilder.not(column.`in`(literal))
+            }
+        }
+    }
+
+    private fun betweenComparisonToPredicate(column: Path<out Any?>, columnPredicate: Between<*>): Predicate {
+        @Suppress("UNCHECKED_CAST")
+        column as Path<Comparable<Any?>?>
+        val fromLiteral: Comparable<Any?>? = uncheckedCast(columnPredicate.rightFromLiteral)
+        val toLiteral: Comparable<Any?>? = uncheckedCast(columnPredicate.rightToLiteral)
+        return criteriaBuilder.between(column, fromLiteral, toLiteral)
+    }
+
+    private fun nullComparisonToPredicate(column: Path<out Any?>, columnPredicate: NullExpression<*>): Predicate {
+        return when (columnPredicate.operator) {
+            IS_NULL -> criteriaBuilder.isNull(column)
+            NOT_NULL -> criteriaBuilder.isNotNull(column)
         }
     }
 }
@@ -173,12 +221,11 @@ class HibernateQueryCriteriaParser(val contractStateType: Class<out ContractStat
         private val log = contextLogger()
     }
 
-    // incrementally build list of join predicates
-    private val joinPredicates = mutableListOf<Predicate>()
     // incrementally build list of root entities (for later use in Sort parsing)
     private val rootEntities = mutableMapOf<Class<out PersistentState>, Root<*>>(Pair(VaultSchemaV1.VaultStates::class.java, vaultStates))
     private val aggregateExpressions = mutableListOf<Expression<*>>()
     private val commonPredicates = mutableMapOf<Pair<String, Operator>, Predicate>()   // schema attribute Name, operator -> predicate
+    private val constraintPredicates = mutableSetOf<Predicate>()
 
     var stateTypes: Vault.StateStatus = Vault.StateStatus.UNCONSUMED
 
@@ -330,8 +377,14 @@ class HibernateQueryCriteriaParser(val contractStateType: Class<out ContractStat
 
         val predicateSet = mutableSetOf<Predicate>()
 
-        val vaultFungibleStates = criteriaQuery.from(VaultSchemaV1.VaultFungibleStates::class.java)
-        rootEntities.putIfAbsent(VaultSchemaV1.VaultFungibleStates::class.java, vaultFungibleStates)
+        // ensure we re-use any existing instance of the same root entity
+        val entityStateClass = VaultSchemaV1.VaultFungibleStates::class.java
+        val vaultFungibleStates =
+                rootEntities.getOrElse(entityStateClass) {
+                    val entityRoot = criteriaQuery.from(entityStateClass)
+                    rootEntities[entityStateClass] = entityRoot
+                    entityRoot
+                }
 
         val joinPredicate = criteriaBuilder.equal(vaultStates.get<PersistentStateRef>("stateRef"), vaultFungibleStates.get<PersistentStateRef>("stateRef"))
         predicateSet.add(joinPredicate)
@@ -362,7 +415,7 @@ class HibernateQueryCriteriaParser(val contractStateType: Class<out ContractStat
         // participants
         criteria.participants?.let {
             val participants = criteria.participants as List<AbstractParty>
-            val joinLinearStateToParty = vaultFungibleStates.joinSet<VaultSchemaV1.VaultLinearStates, AbstractParty>("participants")
+            val joinLinearStateToParty = vaultFungibleStates.joinSet<VaultSchemaV1.VaultFungibleStates, AbstractParty>("participants")
             predicateSet.add(criteriaBuilder.and(joinLinearStateToParty.`in`(participants)))
             criteriaQuery.distinct(true)
         }
@@ -374,11 +427,17 @@ class HibernateQueryCriteriaParser(val contractStateType: Class<out ContractStat
 
         val predicateSet = mutableSetOf<Predicate>()
 
-        val vaultLinearStates = criteriaQuery.from(VaultSchemaV1.VaultLinearStates::class.java)
-        rootEntities.putIfAbsent(VaultSchemaV1.VaultLinearStates::class.java, vaultLinearStates)
+        // ensure we re-use any existing instance of the same root entity
+        val entityStateClass = VaultSchemaV1.VaultLinearStates::class.java
+        val vaultLinearStates =
+                rootEntities.getOrElse(entityStateClass) {
+                    val entityRoot = criteriaQuery.from(entityStateClass)
+                    rootEntities[entityStateClass] = entityRoot
+                    entityRoot
+                }
 
         val joinPredicate = criteriaBuilder.equal(vaultStates.get<PersistentStateRef>("stateRef"), vaultLinearStates.get<PersistentStateRef>("stateRef"))
-        joinPredicates.add(joinPredicate)
+        predicateSet.add(joinPredicate)
 
         // linear ids UUID
         criteria.uuid?.let {
@@ -407,22 +466,28 @@ class HibernateQueryCriteriaParser(val contractStateType: Class<out ContractStat
         log.trace { "Parsing VaultCustomQueryCriteria: $criteria" }
 
         val predicateSet = mutableSetOf<Predicate>()
-        val entityClass = resolveEnclosingObjectFromExpression(criteria.expression)
+        val entityStateClass = resolveEnclosingObjectFromExpression(criteria.expression)
 
         try {
-            val entityRoot = criteriaQuery.from(entityClass)
-            rootEntities.putIfAbsent(entityClass, entityRoot)
+            // ensure we re-use any existing instance of the same root entity
+            val entityRoot =
+                    rootEntities.getOrElse(entityStateClass) {
+                        val entityRoot = criteriaQuery.from(entityStateClass)
+                        rootEntities[entityStateClass] = entityRoot
+                        entityRoot
+                    }
 
             val joinPredicate = criteriaBuilder.equal(vaultStates.get<PersistentStateRef>("stateRef"), entityRoot.get<PersistentStateRef>("stateRef"))
-            joinPredicates.add(joinPredicate)
+            predicateSet.add(joinPredicate)
 
             // resolve general criteria expressions
-            parseExpression(entityRoot, criteria.expression, predicateSet)
+            @Suppress("UNCHECKED_CAST")
+            parseExpression(entityRoot as Root<L>, criteria.expression, predicateSet)
         } catch (e: Exception) {
             e.message?.let { message ->
                 if (message.contains("Not an entity"))
                     throw VaultQueryException("""
-                    Please register the entity '${entityClass.name}'
+                    Please register the entity '${entityStateClass.name}'
                     See https://docs.corda.net/api-persistence.html#custom-schema-registration for more information""")
             }
             throw VaultQueryException("Parsing error: ${e.message}")
@@ -444,7 +509,7 @@ class HibernateQueryCriteriaParser(val contractStateType: Class<out ContractStat
                 else
                     aggregateExpressions
         criteriaQuery.multiselect(selections)
-        val combinedPredicates = joinPredicates.plus(predicateSet).plus(commonPredicates.values)
+        val combinedPredicates = commonPredicates.values.plus(predicateSet).plus(constraintPredicates)
         criteriaQuery.where(*combinedPredicates.toTypedArray())
 
         return predicateSet
@@ -456,7 +521,7 @@ class HibernateQueryCriteriaParser(val contractStateType: Class<out ContractStat
         // state status
         stateTypes = criteria.status
         if (criteria.status != Vault.StateStatus.ALL) {
-            val predicateID = Pair(VaultSchemaV1.VaultStates::stateStatus.name, EqualityComparisonOperator.EQUAL)
+            val predicateID = Pair(VaultSchemaV1.VaultStates::stateStatus.name, EQUAL)
             if (commonPredicates.containsKey(predicateID)) {
                 val existingStatus = ((commonPredicates[predicateID] as ComparisonPredicate).rightHandOperand as LiteralExpression).literal
                 if (existingStatus != criteria.status) {
@@ -468,10 +533,24 @@ class HibernateQueryCriteriaParser(val contractStateType: Class<out ContractStat
             }
         }
 
+        // state relevance.
+        if (criteria.relevancyStatus != Vault.RelevancyStatus.ALL) {
+            val predicateID = Pair(VaultSchemaV1.VaultStates::relevancyStatus.name, EQUAL)
+            if (commonPredicates.containsKey(predicateID)) {
+                val existingStatus = ((commonPredicates[predicateID] as ComparisonPredicate).rightHandOperand as LiteralExpression).literal
+                if (existingStatus != criteria.relevancyStatus) {
+                    log.warn("Overriding previous attribute [${VaultSchemaV1.VaultStates::relevancyStatus.name}] value $existingStatus with ${criteria.status}")
+                    commonPredicates.replace(predicateID, criteriaBuilder.equal(vaultStates.get<Vault.RelevancyStatus>(VaultSchemaV1.VaultStates::relevancyStatus.name), criteria.relevancyStatus))
+                }
+            } else {
+                commonPredicates[predicateID] = criteriaBuilder.equal(vaultStates.get<Vault.RelevancyStatus>(VaultSchemaV1.VaultStates::relevancyStatus.name), criteria.relevancyStatus)
+            }
+        }
+
         // contract state types
         val contractStateTypes = deriveContractStateTypes(criteria.contractStateTypes)
         if (contractStateTypes.isNotEmpty()) {
-            val predicateID = Pair(VaultSchemaV1.VaultStates::contractStateClassName.name, CollectionOperator.IN)
+            val predicateID = Pair(VaultSchemaV1.VaultStates::contractStateClassName.name, IN)
             if (commonPredicates.containsKey(predicateID)) {
                 val existingTypes = (commonPredicates[predicateID]!!.expressions[0] as InPredicate<*>).values.map { (it as LiteralExpression).literal }.toSet()
                 if (existingTypes != contractStateTypes) {
@@ -480,6 +559,38 @@ class HibernateQueryCriteriaParser(val contractStateType: Class<out ContractStat
                 }
             } else {
                 commonPredicates[predicateID] = criteriaBuilder.and(vaultStates.get<String>(VaultSchemaV1.VaultStates::contractStateClassName.name).`in`(contractStateTypes))
+            }
+        }
+
+        // contract constraint types
+        if (criteria.constraintTypes.isNotEmpty()) {
+            val predicateID = Pair(VaultSchemaV1.VaultStates::constraintType.name, IN)
+            if (commonPredicates.containsKey(predicateID)) {
+                val existingTypes = (commonPredicates[predicateID]!!.expressions[0] as InPredicate<*>).values.map { (it as LiteralExpression).literal }.toSet()
+                if (existingTypes != criteria.constraintTypes) {
+                    log.warn("Enriching previous attribute [${VaultSchemaV1.VaultStates::constraintType.name}] values [$existingTypes] with [${criteria.constraintTypes}]")
+                    commonPredicates.replace(predicateID, criteriaBuilder.and(vaultStates.get<Vault.ConstraintInfo.Type>(VaultSchemaV1.VaultStates::constraintType.name).`in`(criteria.constraintTypes.plus(existingTypes))))
+                }
+            } else {
+                commonPredicates[predicateID] = criteriaBuilder.and(vaultStates.get<Vault.ConstraintInfo.Type>(VaultSchemaV1.VaultStates::constraintType.name).`in`(criteria.constraintTypes))
+            }
+        }
+
+        // contract constraint information (type and data)
+        if (criteria.constraints.isNotEmpty()) {
+            criteria.constraints.forEach { constraint ->
+                val predicateConstraintType = criteriaBuilder.equal(vaultStates.get<Vault.ConstraintInfo>(VaultSchemaV1.VaultStates::constraintType.name), constraint.type())
+                if (constraint.data() != null) {
+                    val predicateConstraintData = criteriaBuilder.equal(vaultStates.get<Vault.ConstraintInfo>(VaultSchemaV1.VaultStates::constraintData.name), constraint.data())
+                    val compositePredicate = criteriaBuilder.and(predicateConstraintType, predicateConstraintData)
+                    if (constraintPredicates.isNotEmpty()) {
+                        val previousPredicate = constraintPredicates.last()
+                        constraintPredicates.clear()
+                        constraintPredicates.add(criteriaBuilder.or(previousPredicate, compositePredicate))
+                    }
+                    else constraintPredicates.add(compositePredicate)
+                }
+                else constraintPredicates.add(criteriaBuilder.or(predicateConstraintType))
             }
         }
 
@@ -502,8 +613,6 @@ class HibernateQueryCriteriaParser(val contractStateType: Class<out ContractStat
                         // scenario where sorting on attributes not parsed as criteria
                         val entityRoot = criteriaQuery.from(entityStateClass)
                         rootEntities[entityStateClass] = entityRoot
-                        val joinPredicate = criteriaBuilder.equal(vaultStates.get<PersistentStateRef>("stateRef"), entityRoot.get<PersistentStateRef>("stateRef"))
-                        joinPredicates.add(joinPredicate)
                         entityRoot
                     }
             when (direction) {
@@ -522,7 +631,6 @@ class HibernateQueryCriteriaParser(val contractStateType: Class<out ContractStat
         }
         if (orderCriteria.isNotEmpty()) {
             criteriaQuery.orderBy(orderCriteria)
-            criteriaQuery.where(*joinPredicates.toTypedArray())
         }
     }
 

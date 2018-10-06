@@ -9,14 +9,15 @@ import net.corda.core.utilities.debug
 import net.corda.node.internal.artemis.*
 import net.corda.node.internal.artemis.BrokerJaasLoginModule.Companion.NODE_P2P_ROLE
 import net.corda.node.internal.artemis.BrokerJaasLoginModule.Companion.PEER_ROLE
+import net.corda.core.internal.errors.AddressBindingException
 import net.corda.node.services.config.NodeConfiguration
-import net.corda.nodeapi.ArtemisTcpTransport.Companion.p2pAcceptorTcpTransport
 import net.corda.nodeapi.internal.AmqpMessageSizeChecksInterceptor
 import net.corda.nodeapi.internal.ArtemisMessageSizeChecksInterceptor
 import net.corda.nodeapi.internal.ArtemisMessagingComponent.Companion.INTERNAL_PREFIX
 import net.corda.nodeapi.internal.ArtemisMessagingComponent.Companion.JOURNAL_HEADER_SIZE
 import net.corda.nodeapi.internal.ArtemisMessagingComponent.Companion.NOTIFICATIONS_ADDRESS
 import net.corda.nodeapi.internal.ArtemisMessagingComponent.Companion.P2P_PREFIX
+import net.corda.nodeapi.internal.ArtemisTcpTransport.Companion.p2pAcceptorTcpTransport
 import net.corda.nodeapi.internal.requireOnDefaultFileSystem
 import org.apache.activemq.artemis.api.core.SimpleString
 import org.apache.activemq.artemis.api.core.management.ActiveMQServerControl
@@ -85,7 +86,7 @@ class ArtemisMessagingServer(private val config: NodeConfiguration,
 
     // TODO: Maybe wrap [IOException] on a key store load error so that it's clearly splitting key store loading from
     // Artemis IO errors
-    @Throws(IOException::class, KeyStoreException::class)
+    @Throws(IOException::class, AddressBindingException::class, KeyStoreException::class)
     private fun configureAndStartServer() {
         val artemisConfig = createArtemisConfig()
         val securityManager = createArtemisSecurityManager()
@@ -98,7 +99,15 @@ class ArtemisMessagingServer(private val config: NodeConfiguration,
             registerPostQueueDeletionCallback { address, qName -> log.debug { "Queue deleted: $qName for $address" } }
         }
 
-        activeMQServer.start()
+        try {
+            activeMQServer.start()
+        } catch (e: java.io.IOException) {
+            if (e.isBindingError()) {
+                throw AddressBindingException(config.p2pAddress)
+            } else {
+                throw e
+            }
+        }
         activeMQServer.remotingService.addIncomingInterceptor(ArtemisMessageSizeChecksInterceptor(maxMessageSize))
         activeMQServer.remotingService.addIncomingInterceptor(AmqpMessageSizeChecksInterceptor(maxMessageSize))
         // Config driven switch between legacy CORE bridges and the newer AMQP protocol bridges.
@@ -110,7 +119,7 @@ class ArtemisMessagingServer(private val config: NodeConfiguration,
         bindingsDirectory = (artemisDir / "bindings").toString()
         journalDirectory = (artemisDir / "journal").toString()
         largeMessagesDirectory = (artemisDir / "large-messages").toString()
-        acceptorConfigurations = mutableSetOf(p2pAcceptorTcpTransport(NetworkHostAndPort(messagingServerAddress.host, messagingServerAddress.port), config))
+        acceptorConfigurations = mutableSetOf(p2pAcceptorTcpTransport(NetworkHostAndPort(messagingServerAddress.host, messagingServerAddress.port), config.p2pSslOptions))
         // Enable built in message deduplication. Note we still have to do our own as the delayed commits
         // and our own definition of commit mean that the built in deduplication cannot remove all duplicates.
         idCacheSize = 2000 // Artemis Default duplicate cache size i.e. a guess
@@ -152,8 +161,8 @@ class ArtemisMessagingServer(private val config: NodeConfiguration,
 
     @Throws(IOException::class, KeyStoreException::class)
     private fun createArtemisSecurityManager(): ActiveMQJAASSecurityManager {
-        val keyStore = config.loadSslKeyStore().internal
-        val trustStore = config.loadTrustStore().internal
+        val keyStore = config.p2pSslOptions.keyStore.get().value.internal
+        val trustStore = config.p2pSslOptions.trustStore.get().value.internal
 
         val securityConfig = object : SecurityConfiguration() {
             // Override to make it work with our login module

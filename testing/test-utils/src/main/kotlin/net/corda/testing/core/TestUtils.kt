@@ -5,10 +5,7 @@ package net.corda.testing.core
 
 import net.corda.core.contracts.PartyAndReference
 import net.corda.core.contracts.StateRef
-import net.corda.core.crypto.SecureHash
-import net.corda.core.crypto.entropyToKeyPair
-import net.corda.core.crypto.generateKeyPair
-import net.corda.core.crypto.toStringShort
+import net.corda.core.crypto.*
 import net.corda.core.identity.CordaX500Name
 import net.corda.core.identity.Party
 import net.corda.core.identity.PartyAndCertificate
@@ -45,17 +42,21 @@ import java.util.concurrent.atomic.AtomicInteger
  *   - The Int.DOLLARS syntax doesn't work from Java.  Use the DOLLARS(int) function instead.
  */
 
-/** Returns a fake state reference for testing purposes **/
+/** Returns a fake state reference for testing purposes. **/
 fun generateStateRef(): StateRef = StateRef(SecureHash.randomSHA256(), 0)
 
 private val freePortCounter = AtomicInteger(30000)
+
 /**
  * Returns a localhost address with a free port.
  *
  * Unsafe for getting multiple ports!
  * Use [getFreeLocalPorts] for getting multiple ports.
  */
-fun freeLocalHostAndPort() = NetworkHostAndPort("localhost", freePort())
+@Suppress("DEPRECATION")
+@Deprecated("Returned port is not guaranteed to be free when used, which can result in flaky tests. Instead use a port " +
+        "range that's unlikely to be used by the rest of the system, such as PortAllocation.Incremental(10000).")
+fun freeLocalHostAndPort(): NetworkHostAndPort = NetworkHostAndPort("localhost", freePort())
 
 /**
  * Returns a free port.
@@ -63,6 +64,8 @@ fun freeLocalHostAndPort() = NetworkHostAndPort("localhost", freePort())
  * Unsafe for getting multiple ports!
  * Use [getFreeLocalPorts] for getting multiple ports.
  */
+@Deprecated("Returned port is not guaranteed to be free when used, which can result in flaky tests. Instead use a port " +
+        "range that's unlikely to be used by the rest of the system, such as PortAllocation.Incremental(10000).")
 fun freePort(): Int = freePortCounter.getAndAccumulate(0) { prev, _ -> 30000 + (prev - 30000 + 1) % 10000 }
 
 /**
@@ -71,6 +74,8 @@ fun freePort(): Int = freePortCounter.getAndAccumulate(0) { prev, _ -> 30000 + (
  * Unlikely, but in the time between running this function and handing the ports
  * to the Node, some other process else could allocate the returned ports.
  */
+@Deprecated("Returned port is not guaranteed to be free when used, which can result in flaky tests. Instead use a port " +
+        "range that's unlikely to be used by the rest of the system, such as PortAllocation.Incremental(10000).")
 fun getFreeLocalPorts(hostName: String, numberToAlloc: Int): List<NetworkHostAndPort> {
     val freePort = freePortCounter.getAndAccumulate(0) { prev, _ -> 30000 + (prev - 30000 + numberToAlloc) % 10000 }
     return (0 until numberToAlloc).map { NetworkHostAndPort(hostName, freePort + it) }
@@ -100,6 +105,18 @@ fun getTestPartyAndCertificate(name: CordaX500Name, publicKey: PublicKey): Party
     return getTestPartyAndCertificate(Party(name, publicKey))
 }
 
+
+private val count = AtomicInteger(0)
+/**
+ * Randomise a party name to avoid clashes with other tests.
+ */
+fun makeUnique(name: CordaX500Name) = name.copy(commonName =
+    if (name.commonName == null) {
+        count.incrementAndGet().toString()
+    } else {
+        "${ name.commonName }_${ count.incrementAndGet() }"
+    })
+
 /**
  * A class that encapsulates a test identity containing a [CordaX500Name] and a [KeyPair], alongside a range
  * of utility methods for use during testing.
@@ -110,24 +127,28 @@ class TestIdentity(val name: CordaX500Name, val keyPair: KeyPair) {
          * Creates an identity that won't equal any other. This is mostly useful as a throwaway for test helpers.
          * @param organisation the organisation part of the new identity's name.
          */
-        fun fresh(organisation: String): TestIdentity {
-            val keyPair = generateKeyPair()
+        @JvmStatic
+        @JvmOverloads
+        fun fresh(organisation: String, signatureScheme: SignatureScheme = Crypto.DEFAULT_SIGNATURE_SCHEME): TestIdentity {
+            val keyPair = Crypto.generateKeyPair(signatureScheme)
             val name = CordaX500Name(organisation, keyPair.public.toStringShort(), CordaX500Name.unspecifiedCountry)
             return TestIdentity(name, keyPair)
         }
     }
 
-    /** Creates an identity with a deterministic [keyPair] i.e. same [entropy] same keyPair .*/
-    constructor(name: CordaX500Name, entropy: Long) : this(name, entropyToKeyPair(BigInteger.valueOf(entropy)))
+    /** Creates an identity with a deterministic [keyPair] i.e. same [entropy] same keyPair. */
+    @JvmOverloads constructor(name: CordaX500Name, entropy: Long, signatureScheme: SignatureScheme = Crypto.DEFAULT_SIGNATURE_SCHEME)
+            : this(name, Crypto.deriveKeyPairFromEntropy(signatureScheme, BigInteger.valueOf(entropy)))
 
     /** Creates an identity with the given name and a fresh keyPair. */
-    constructor(name: CordaX500Name) : this(name, generateKeyPair())
+    @JvmOverloads constructor(name: CordaX500Name, signatureScheme: SignatureScheme = Crypto.DEFAULT_SIGNATURE_SCHEME)
+            : this(name, Crypto.generateKeyPair(signatureScheme))
 
     val publicKey: PublicKey get() = keyPair.public
     val party: Party = Party(name, publicKey)
     val identity: PartyAndCertificate by lazy { getTestPartyAndCertificate(party) } // Often not needed.
 
-    /** Returns a [PartyAndReference] for this identity and the given reference */
+    /** Returns a [PartyAndReference] for this identity and the given reference. */
     fun ref(vararg bytes: Byte): PartyAndReference = party.ref(*bytes)
 }
 

@@ -7,18 +7,18 @@ import com.esotericsoftware.kryo.io.Output
 import com.esotericsoftware.kryo.serializers.CompatibleFieldSerializer
 import com.esotericsoftware.kryo.serializers.FieldSerializer
 import com.esotericsoftware.kryo.util.MapReferenceResolver
+import net.corda.core.DeleteForDJVM
 import net.corda.core.contracts.PrivacySalt
 import net.corda.core.crypto.Crypto
 import net.corda.core.crypto.SecureHash
 import net.corda.core.crypto.TransactionSignature
 import net.corda.core.internal.uncheckedCast
 import net.corda.core.serialization.SerializationContext
-import net.corda.core.serialization.SerializationContext.UseCase.Checkpoint
-import net.corda.core.serialization.SerializationContext.UseCase.Storage
 import net.corda.core.serialization.SerializeAsTokenContext
 import net.corda.core.serialization.SerializedBytes
 import net.corda.core.transactions.*
 import net.corda.core.utilities.OpaqueBytes
+import net.corda.serialization.internal.checkUseCase
 import net.corda.serialization.internal.serializationContextKey
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
@@ -274,16 +274,9 @@ object SignedTransactionSerializer : Serializer<SignedTransaction>() {
     }
 }
 
-sealed class UseCaseSerializer<T>(private val allowedUseCases: EnumSet<SerializationContext.UseCase>) : Serializer<T>() {
-    protected fun checkUseCase() {
-        net.corda.serialization.internal.checkUseCase(allowedUseCases)
-    }
-}
-
 @ThreadSafe
-object PrivateKeySerializer : UseCaseSerializer<PrivateKey>(EnumSet.of(Storage, Checkpoint)) {
+object PrivateKeySerializer : Serializer<PrivateKey>() {
     override fun write(kryo: Kryo, output: Output, obj: PrivateKey) {
-        checkUseCase()
         output.writeBytesWithLength(obj.encoded)
     }
 
@@ -460,6 +453,7 @@ fun Kryo.serializationContext(): SerializeAsTokenContext? = context.get(serializ
  * unmodifiable collection to [java.lang.Throwable.suppressedExceptions] which will fail some sentinel identity checks
  * e.g. in [java.lang.Throwable.addSuppressed]
  */
+@DeleteForDJVM
 @ThreadSafe
 class ThrowableSerializer<T>(kryo: Kryo, type: Class<T>) : Serializer<Throwable>(false, true) {
 

@@ -1,5 +1,6 @@
 package net.corda.serialization.internal.amqp
 
+import net.corda.core.KeepForDJVM
 import net.corda.core.serialization.SerializationContext
 import org.apache.qpid.proton.amqp.Binary
 import org.apache.qpid.proton.codec.Data
@@ -18,8 +19,8 @@ sealed class PropertySerializer(val name: String, val propertyReader: PropertyRe
     val default: String? = generateDefault()
     val mandatory: Boolean = generateMandatory()
 
-    private val isInterface: Boolean get() = resolvedType.asClass()?.isInterface == true
-    private val isJVMPrimitive: Boolean get() = resolvedType.asClass()?.isPrimitive == true
+    private val isInterface: Boolean get() = resolvedType.asClass().isInterface
+    private val isJVMPrimitive: Boolean get() = resolvedType.asClass().isPrimitive
 
     private fun generateType(): String {
         return if (isInterface || resolvedType == Any::class.java) "*" else SerializerFactory.nameForType(resolvedType)
@@ -60,6 +61,7 @@ sealed class PropertySerializer(val name: String, val propertyReader: PropertyRe
     /**
      * A property serializer for a complex type (another object).
      */
+    @KeepForDJVM
     class DescribedTypePropertySerializer(
             name: String,
             readMethod: PropertyReader,

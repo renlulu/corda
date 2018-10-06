@@ -17,7 +17,9 @@ import net.corda.core.serialization.SerializeAsTokenContext
 import net.corda.core.transactions.SignedTransaction
 import net.corda.core.utilities.NonEmptySet
 import net.corda.core.utilities.UntrustworthyData
+import net.corda.core.utilities.debug
 import net.corda.core.utilities.unwrap
+import java.nio.file.FileAlreadyExistsException
 import java.util.*
 
 /**
@@ -49,6 +51,8 @@ sealed class FetchDataFlow<T : NamedByHash, in W : Any>(
 
     class HashNotFound(val requested: SecureHash) : FlowException()
 
+    class IllegalTransactionRequest(val requested: SecureHash) : FlowException("Illegal attempt to request a transaction (${requested}) that is not in the transitive dependency graph of the sent transaction.")
+
     @CordaSerializable
     data class Result<out T : NamedByHash>(val fromDisk: List<T>, val downloaded: List<T>)
 
@@ -72,7 +76,7 @@ sealed class FetchDataFlow<T : NamedByHash, in W : Any>(
         return if (toFetch.isEmpty()) {
             Result(fromDisk, emptyList())
         } else {
-            logger.info("Requesting ${toFetch.size} dependency(s) for verification from ${otherSideSession.counterparty.name}")
+            logger.debug { "Requesting ${toFetch.size} dependency(s) for verification from ${otherSideSession.counterparty.name}" }
 
             // TODO: Support "large message" response streaming so response sizes are not limited by RAM.
             // We can then switch to requesting items in large batches to minimise the latency penalty.
@@ -90,7 +94,7 @@ sealed class FetchDataFlow<T : NamedByHash, in W : Any>(
             }
             // Check for a buggy/malicious peer answering with something that we didn't ask for.
             val downloaded = validateFetchResponse(UntrustworthyData(maybeItems), toFetch)
-            logger.info("Fetched ${downloaded.size} elements from ${otherSideSession.counterparty.name}")
+            logger.debug { "Fetched ${downloaded.size} elements from ${otherSideSession.counterparty.name}" }
             maybeWriteToDisk(downloaded)
             Result(fromDisk, downloaded)
         }
@@ -147,7 +151,19 @@ class FetchAttachmentsFlow(requests: Set<SecureHash>,
 
     override fun maybeWriteToDisk(downloaded: List<Attachment>) {
         for (attachment in downloaded) {
-            serviceHub.attachments.importAttachment(attachment.open(), "$P2P_UPLOADER:${otherSideSession.counterparty.name}", null)
+            with(serviceHub.attachments) {
+                if (!hasAttachment(attachment.id)) {
+                    try {
+                        importAttachment(attachment.open(), "$P2P_UPLOADER:${otherSideSession.counterparty.name}", null)
+                    } catch (e: FileAlreadyExistsException) {
+                        // This can happen when another transaction will insert the same attachment during this transaction.
+                        // The outcome is the same (the attachment is imported), so we can ignore this exception.
+                        logger.debug("Attachment ${attachment.id} already inserted.")
+                    }
+                } else {
+                    logger.debug("Attachment ${attachment.id} already exists, skipping.")
+                }
+            }
         }
     }
 
@@ -166,9 +182,11 @@ class FetchAttachmentsFlow(requests: Set<SecureHash>,
  * Given a set of tx hashes (IDs), either loads them from local disk or asks the remote peer to provide them.
  *
  * A malicious response in which the data provided by the remote peer does not hash to the requested hash results in
- * [FetchDataFlow.DownloadedVsRequestedDataMismatch] being thrown. If the remote peer doesn't have an entry, it
- * results in a [FetchDataFlow.HashNotFound] exception. Note that returned transactions are not inserted into
- * the database, because it's up to the caller to actually verify the transactions are valid.
+ * [FetchDataFlow.DownloadedVsRequestedDataMismatch] being thrown.
+ * If the remote peer doesn't have an entry, it results in a [FetchDataFlow.HashNotFound] exception.
+ * If the remote peer is not authorized to request this transaction, it results in a [FetchDataFlow.IllegalTransactionRequest] exception.
+ * Authorisation is accorded only on valid ancestors of the root transation.
+ * Note that returned transactions are not inserted into the database, because it's up to the caller to actually verify the transactions are valid.
  */
 class FetchTransactionsFlow(requests: Set<SecureHash>, otherSide: FlowSession) :
         FetchDataFlow<SignedTransaction, SignedTransaction>(requests, otherSide, DataType.TRANSACTION) {

@@ -10,10 +10,11 @@ import net.corda.core.utilities.ProgressTracker
 import net.corda.core.utilities.getOrThrow
 import net.corda.core.utilities.unwrap
 import net.corda.node.services.Permissions
+import net.corda.testing.core.ALICE_NAME
+import net.corda.testing.core.BOB_NAME
 import net.corda.testing.core.singleIdentity
 import net.corda.testing.driver.DriverParameters
 import net.corda.testing.driver.driver
-import net.corda.testing.driver.internal.RandomFree
 import net.corda.testing.node.User
 import org.junit.Before
 import org.junit.Test
@@ -22,7 +23,6 @@ import java.sql.SQLException
 import java.util.*
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
-
 
 class FlowRetryTest {
     @Before
@@ -36,11 +36,12 @@ class FlowRetryTest {
         val numSessions = 2
         val numIterations = 10
         val user = User("mark", "dadada", setOf(Permissions.startFlow<InitiatorFlow>()))
-        val result: Any? = driver(DriverParameters(isDebug = true, startNodesInProcess = isQuasarAgentSpecified(),
-                portAllocation = RandomFree)) {
-
-            val nodeAHandle = startNode(rpcUsers = listOf(user)).getOrThrow()
-            val nodeBHandle = startNode(rpcUsers = listOf(user)).getOrThrow()
+        val result: Any? = driver(DriverParameters(
+                startNodesInProcess = isQuasarAgentSpecified(),
+                notarySpecs = emptyList()
+        )) {
+            val nodeAHandle = startNode(providedName = ALICE_NAME, rpcUsers = listOf(user)).getOrThrow()
+            val nodeBHandle = startNode(providedName = BOB_NAME, rpcUsers = listOf(user)).getOrThrow()
 
             val result = CordaRPCClient(nodeAHandle.rpcAddress).start(user.username, user.password).use {
                 it.proxy.startFlow(::InitiatorFlow, numSessions, numIterations, nodeBHandle.nodeInfo.singleIdentity()).returnValue.getOrThrow()
@@ -67,7 +68,7 @@ class InitiatorFlow(private val sessionsCount: Int, private val iterationsCount:
 
         fun tracker() = ProgressTracker(FIRST_STEP)
 
-        val seen = Collections.synchronizedSet(HashSet<Visited>())
+        val seen: MutableSet<Visited> = Collections.synchronizedSet(HashSet<Visited>())
 
         fun visit(sessionNum: Int, iterationNum: Int, step: Step) {
             val visited = Visited(sessionNum, iterationNum, step)
@@ -118,7 +119,7 @@ class InitiatedFlow(val session: FlowSession) : FlowLogic<Any>() {
 
         fun tracker() = ProgressTracker(FIRST_STEP)
 
-        val seen = Collections.synchronizedSet(HashSet<Visited>())
+        val seen: MutableSet<Visited> = Collections.synchronizedSet(HashSet<Visited>())
 
         fun visit(sessionNum: Int, iterationNum: Int, step: Step) {
             val visited = Visited(sessionNum, iterationNum, step)

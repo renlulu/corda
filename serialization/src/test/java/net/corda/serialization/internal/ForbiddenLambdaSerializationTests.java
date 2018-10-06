@@ -19,8 +19,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.ThrowableAssert.catchThrowable;
 
 public final class ForbiddenLambdaSerializationTests {
+
     private EnumSet<SerializationContext.UseCase> contexts = EnumSet.complementOf(
-            EnumSet.of(SerializationContext.UseCase.Checkpoint, SerializationContext.UseCase.Testing));
+            EnumSet.of(SerializationContext.UseCase.Testing));
+
     @Rule
     public final SerializationEnvironmentRule testSerialization = new SerializationEnvironmentRule();
     private SerializationFactory factory;
@@ -43,7 +45,7 @@ public final class ForbiddenLambdaSerializationTests {
             assertThat(throwable)
                     .isNotNull()
                     .isInstanceOf(NotSerializableException.class)
-                    .hasMessageContaining(getClass().getName());
+                    .hasMessageContaining("Serializer does not support synthetic classes");
         });
     }
 
@@ -61,7 +63,7 @@ public final class ForbiddenLambdaSerializationTests {
             assertThat(throwable)
                     .isNotNull()
                     .isInstanceOf(NotSerializableException.class)
-                    .hasMessageContaining(getClass().getName());
+                    .hasMessageContaining("Serializer does not support synthetic classes");
         });
     }
 

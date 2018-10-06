@@ -1,7 +1,6 @@
 package net.corda.client.rpc
 
 import net.corda.client.rpc.internal.RPCClient
-import net.corda.client.rpc.internal.CordaRPCClientConfigurationImpl
 import net.corda.core.context.Trace
 import net.corda.core.crypto.random63BitValue
 import net.corda.core.internal.concurrent.fork
@@ -14,7 +13,7 @@ import net.corda.node.services.messaging.RPCServerConfiguration
 import net.corda.nodeapi.RPCApi
 import net.corda.nodeapi.eventually
 import net.corda.testing.core.SerializationEnvironmentRule
-import net.corda.testing.core.freePort
+import net.corda.testing.driver.PortAllocation
 import net.corda.testing.internal.testThreadFactory
 import net.corda.testing.node.internal.*
 import org.apache.activemq.artemis.api.config.ActiveMQDefaultConfiguration
@@ -38,14 +37,17 @@ class RPCStabilityTests {
     @Rule
     @JvmField
     val testSerialization = SerializationEnvironmentRule(true)
+
     private val pool = Executors.newFixedThreadPool(10, testThreadFactory())
+    private val portAllocation = PortAllocation.Incremental(10000)
+
     @After
     fun shutdown() {
         pool.shutdown()
     }
 
     object DummyOps : RPCOps {
-        override val protocolVersion = 0
+        override val protocolVersion = 1000
     }
 
     private fun waitUntilNumberOfThreadsStable(executorService: ScheduledExecutorService): Map<Thread, List<StackTraceElement>> {
@@ -78,7 +80,6 @@ class RPCStabilityTests {
 
     private fun runBlockAndCheckThreads(block: () -> Unit) {
         val executor = Executors.newScheduledThreadPool(1)
-
         try {
             // Warm-up so that all the thread pools & co. created
             block()
@@ -91,7 +92,7 @@ class RPCStabilityTests {
             // This is a less than check because threads from other tests may be shutting down while this test is running.
             // This is therefore a "best effort" check. When this test is run on its own this should be a strict equality.
             // In case of failure we output the threads along with their stacktraces to get an idea what was running at a time.
-            require(threadsBefore.keys.size >= threadsAfter.keys.size, { "threadsBefore: $threadsBefore\nthreadsAfter: $threadsAfter" })
+            require(threadsBefore.keys.size >= threadsAfter.keys.size) { "threadsBefore: $threadsBefore\nthreadsAfter: $threadsAfter" }
         } finally {
             executor.shutdownNow()
         }
@@ -106,7 +107,7 @@ class RPCStabilityTests {
                 Try.on {
                     startRpcClient<RPCOps>(
                             server.get().broker.hostAndPort!!,
-                            configuration = CordaRPCClientConfigurationImpl.default.copy(minimumServerProtocolVersion = 1)
+                            configuration = CordaRPCClientConfiguration.DEFAULT.copy(minimumServerProtocolVersion = 1000)
                     ).get()
                 }
             }
@@ -129,7 +130,7 @@ class RPCStabilityTests {
         rpcDriver {
             fun startAndCloseServer(broker: RpcBrokerHandle) {
                 startRpcServerWithBrokerRunning(
-                        configuration = RPCServerConfiguration.default,
+                        configuration = RPCServerConfiguration.DEFAULT,
                         ops = DummyOps,
                         brokerHandle = broker
                 ).rpcServer.close()
@@ -150,7 +151,7 @@ class RPCStabilityTests {
     @Test
     fun `rpc client close doesnt leak broker resources`() {
         rpcDriver {
-            val server = startRpcServer(configuration = RPCServerConfiguration.default, ops = DummyOps).get()
+            val server = startRpcServer(configuration = RPCServerConfiguration.DEFAULT, ops = DummyOps).get()
             RPCClient<RPCOps>(server.broker.hostAndPort!!).start(RPCOps::class.java, rpcTestUser.username, rpcTestUser.password).close()
             val initial = server.broker.getStats()
             repeat(100) {
@@ -202,7 +203,7 @@ class RPCStabilityTests {
         rpcDriver {
             val leakObservableOpsImpl = object : LeakObservableOps {
                 val leakedUnsubscribedCount = AtomicInteger(0)
-                override val protocolVersion = 0
+                override val protocolVersion = 1000
                 override fun leakObservable(): Observable<Nothing> {
                     return PublishSubject.create<Nothing>().doOnUnsubscribe {
                         leakedUnsubscribedCount.incrementAndGet()
@@ -233,7 +234,7 @@ class RPCStabilityTests {
     fun `client reconnects to rebooted server`() {
         rpcDriver {
             val ops = object : ReconnectOps {
-                override val protocolVersion = 0
+                override val protocolVersion = 1000
                 override fun ping() = "pong"
             }
 
@@ -241,7 +242,7 @@ class RPCStabilityTests {
             val serverPort = startRpcServer<ReconnectOps>(ops = ops).getOrThrow().broker.hostAndPort!!
             serverFollower.unfollow()
             // Set retry interval to 1s to reduce test duration
-            val clientConfiguration = CordaRPCClientConfigurationImpl.default.copy(connectionRetryInterval = 1.seconds)
+            val clientConfiguration = CordaRPCClientConfiguration.DEFAULT.copy(connectionRetryInterval = 1.seconds)
             val clientFollower = shutdownManager.follower()
             val client = startRpcClient<ReconnectOps>(serverPort, configuration = clientConfiguration).getOrThrow()
             clientFollower.unfollow()
@@ -258,7 +259,7 @@ class RPCStabilityTests {
     fun `connection failover fails, rpc calls throw`() {
         rpcDriver {
             val ops = object : ReconnectOps {
-                override val protocolVersion = 0
+                override val protocolVersion = 1000
                 override fun ping() = "pong"
             }
 
@@ -266,7 +267,7 @@ class RPCStabilityTests {
             val serverPort = startRpcServer<ReconnectOps>(ops = ops).getOrThrow().broker.hostAndPort!!
             serverFollower.unfollow()
             // Set retry interval to 1s to reduce test duration
-            val clientConfiguration = CordaRPCClientConfigurationImpl.default.copy(connectionRetryInterval = 1.seconds, maxReconnectAttempts = 5)
+            val clientConfiguration = CordaRPCClientConfiguration.DEFAULT.copy(connectionRetryInterval = 1.seconds, maxReconnectAttempts = 5)
             val clientFollower = shutdownManager.follower()
             val client = startRpcClient<ReconnectOps>(serverPort, configuration = clientConfiguration).getOrThrow()
             clientFollower.unfollow()
@@ -289,7 +290,7 @@ class RPCStabilityTests {
     fun `observables error when connection breaks`() {
         rpcDriver {
             val ops = object : NoOps {
-                override val protocolVersion = 0
+                override val protocolVersion = 1000
                 override fun subscribe(): Observable<Nothing> {
                     return PublishSubject.create<Nothing>()
                 }
@@ -298,7 +299,7 @@ class RPCStabilityTests {
             val serverPort = startRpcServer<NoOps>(ops = ops).getOrThrow().broker.hostAndPort!!
             serverFollower.unfollow()
 
-            val clientConfiguration = CordaRPCClientConfigurationImpl.default.copy(connectionRetryInterval = 500.millis, maxReconnectAttempts = 1)
+            val clientConfiguration = CordaRPCClientConfiguration.DEFAULT.copy(connectionRetryInterval = 500.millis, maxReconnectAttempts = 1)
             val clientFollower = shutdownManager.follower()
             val client = startRpcClient<NoOps>(serverPort, configuration = clientConfiguration).getOrThrow()
             clientFollower.unfollow()
@@ -328,7 +329,7 @@ class RPCStabilityTests {
 
     @Test
     fun `client throws RPCException after initial connection attempt fails`() {
-        val client = CordaRPCClient(NetworkHostAndPort("localhost", freePort()))
+        val client = CordaRPCClient(portAllocation.nextHostAndPort())
         var exceptionMessage: String? = null
         try {
            client.start("user", "pass").proxy
@@ -349,7 +350,7 @@ class RPCStabilityTests {
     fun `client connects to first available server`() {
         rpcDriver {
             val ops = object : ServerOps {
-                override val protocolVersion = 0
+                override val protocolVersion = 1000
                 override fun serverId() = "server"
             }
             val serverFollower = shutdownManager.follower()
@@ -370,15 +371,15 @@ class RPCStabilityTests {
     fun `3 server failover`() {
         rpcDriver {
             val ops1 = object : ServerOps {
-                override val protocolVersion = 0
+                override val protocolVersion = 1000
                 override fun serverId() = "server1"
             }
             val ops2 = object : ServerOps {
-                override val protocolVersion = 0
+                override val protocolVersion = 1000
                 override fun serverId() = "server2"
             }
             val ops3 = object : ServerOps {
-                override val protocolVersion = 0
+                override val protocolVersion = 1000
                 override fun serverId() = "server3"
             }
             val serverFollower1 = shutdownManager.follower()
@@ -442,7 +443,7 @@ class RPCStabilityTests {
     fun `server cleans up queues after disconnected clients`() {
         rpcDriver {
             val trackSubscriberOpsImpl = object : TrackSubscriberOps {
-                override val protocolVersion = 0
+                override val protocolVersion = 1000
                 val subscriberCount = AtomicInteger(0)
                 val trackSubscriberCountObservable = UnicastSubject.create<Unit>().share().
                         doOnSubscribe { subscriberCount.incrementAndGet() }.
@@ -453,7 +454,7 @@ class RPCStabilityTests {
                 }
             }
             val server = startRpcServer<TrackSubscriberOps>(
-                    configuration = RPCServerConfiguration.default.copy(
+                    configuration = RPCServerConfiguration.DEFAULT.copy(
                             reapInterval = 100.millis
                     ),
                     ops = trackSubscriberOpsImpl
@@ -485,7 +486,7 @@ class RPCStabilityTests {
     }
 
     class SlowConsumerRPCOpsImpl : SlowConsumerRPCOps {
-        override val protocolVersion = 0
+        override val protocolVersion = 1000
 
         override fun streamAtInterval(interval: Duration, size: Int): Observable<ByteArray> {
             val chunk = ByteArray(size)
@@ -586,7 +587,7 @@ class RPCStabilityTests {
                 val request = RPCApi.ClientToServer.fromClientMessage(it)
                 when (request) {
                     is RPCApi.ClientToServer.RpcRequest -> {
-                        val reply = RPCApi.ServerToClient.RpcReply(request.replyId, Try.Success(0), "server")
+                        val reply = RPCApi.ServerToClient.RpcReply(request.replyId, Try.Success(1000), "server")
                         val message = session.createMessage(false)
                         reply.writeToClientMessage(SerializationDefaults.RPC_SERVER_CONTEXT, message)
                         message.putLongProperty(RPCApi.DEDUPLICATION_SEQUENCE_NUMBER_FIELD_NAME, dedupeId.getAndIncrement())

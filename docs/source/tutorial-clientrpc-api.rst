@@ -1,3 +1,9 @@
+.. highlight:: kotlin
+.. raw:: html
+
+   <script type="text/javascript" src="_static/jquery.js"></script>
+   <script type="text/javascript" src="_static/codesets.js"></script>
+
 .. _graphstream: http://graphstream-project.org/
 
 Using the client RPC API
@@ -13,7 +19,7 @@ and a Alice node that can issue, move and exit cash.
 Here's how we configure the node to create a user that has the permissions to start the ``CashIssueFlow``,
 ``CashPaymentFlow``, and ``CashExitFlow``:
 
-.. literalinclude:: example-code/src/main/kotlin/net/corda/docs/ClientRpcTutorial.kt
+.. literalinclude:: example-code/src/main/kotlin/net/corda/docs/kotlin/ClientRpcTutorial.kt
     :language: kotlin
     :start-after: START 1
     :end-before: END 1
@@ -21,7 +27,7 @@ Here's how we configure the node to create a user that has the permissions to st
 Now we can connect to the node itself using a valid RPC user login and start generating transactions in a different
 thread using ``generateTransactions`` (to be defined later):
 
-.. literalinclude:: example-code/src/main/kotlin/net/corda/docs/ClientRpcTutorial.kt
+.. literalinclude:: example-code/src/main/kotlin/net/corda/docs/kotlin/ClientRpcTutorial.kt
     :language: kotlin
     :start-after: START 2
     :end-before: END 2
@@ -39,7 +45,7 @@ signature tells us that the RPC operation will return a list of transactions and
 general pattern, we query some data and the node will return the current snapshot and future updates done to it.
 Observables are described in further detail in :doc:`clientrpc`
 
-.. literalinclude:: example-code/src/main/kotlin/net/corda/docs/ClientRpcTutorial.kt
+.. literalinclude:: example-code/src/main/kotlin/net/corda/docs/kotlin/ClientRpcTutorial.kt
     :language: kotlin
     :start-after: START 3
     :end-before: END 3
@@ -48,9 +54,9 @@ Observables are described in further detail in :doc:`clientrpc`
 The graph will be defined as follows:
 
 * Each transaction is a vertex, represented by printing ``NODE <txhash>``
-* Each input-output relationship is an edge, represented by prining ``EDGE <txhash> <txhash>``
+* Each input-output relationship is an edge, represented by printing ``EDGE <txhash> <txhash>``
 
-.. literalinclude:: example-code/src/main/kotlin/net/corda/docs/ClientRpcTutorial.kt
+.. literalinclude:: example-code/src/main/kotlin/net/corda/docs/kotlin/ClientRpcTutorial.kt
     :language: kotlin
     :start-after: START 4
     :end-before: END 4
@@ -58,7 +64,7 @@ The graph will be defined as follows:
 
 Now we just need to create the transactions themselves!
 
-.. literalinclude:: example-code/src/main/kotlin/net/corda/docs/ClientRpcTutorial.kt
+.. literalinclude:: example-code/src/main/kotlin/net/corda/docs/kotlin/ClientRpcTutorial.kt
     :language: kotlin
     :start-after: START 6
     :end-before: END 6
@@ -85,7 +91,7 @@ listening on successfully created ones, which are dumped to the console. We just
 
 Now let's try to visualise the transaction graph. We will use a graph drawing library called graphstream_.
 
-.. literalinclude:: example-code/src/main/kotlin/net/corda/docs/ClientRpcTutorial.kt
+.. literalinclude:: example-code/src/main/kotlin/net/corda/docs/kotlin/ClientRpcTutorial.kt
     :language: kotlin
     :start-after: START 5
     :end-before: END 5
@@ -99,7 +105,7 @@ Whitelisting classes from your CorDapp with the Corda node
 As described in :doc:`clientrpc`, you have to whitelist any additional classes you add that are needed in RPC
 requests or responses with the Corda node.  Here's an example of both ways you can do this for a couple of example classes.
 
-.. literalinclude:: example-code/src/main/kotlin/net/corda/docs/ClientRpcTutorial.kt
+.. literalinclude:: example-code/src/main/kotlin/net/corda/docs/kotlin/ClientRpcTutorial.kt
     :language: kotlin
     :start-after: START 7
     :end-before: END 7

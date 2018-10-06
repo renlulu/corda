@@ -1,5 +1,7 @@
 package net.corda.core.node
 
+import net.corda.core.CordaRuntimeException
+import net.corda.core.KeepForDJVM
 import net.corda.core.identity.Party
 import net.corda.core.node.services.AttachmentId
 import net.corda.core.serialization.CordaSerializable
@@ -23,6 +25,7 @@ import java.time.Instant
  * @property eventHorizon Time after which nodes will be removed from the network map if they have not been seen
  * during this period
  */
+@KeepForDJVM
 @CordaSerializable
 data class NetworkParameters(
         val minimumPlatformVersion: Int,
@@ -58,6 +61,7 @@ data class NetworkParameters(
         require(epoch > 0) { "epoch must be at least 1" }
         require(maxMessageSize > 0) { "maxMessageSize must be at least 1" }
         require(maxTransactionSize > 0) { "maxTransactionSize must be at least 1" }
+        require(maxTransactionSize <= maxMessageSize) { "maxTransactionSize cannot be bigger than maxMessageSize" }
         require(!eventHorizon.isNegative) { "eventHorizon must be positive value" }
     }
 
@@ -100,5 +104,12 @@ data class NetworkParameters(
  * @property identity Identity of the notary (note that it can be an identity of the distributed node).
  * @property validating Indicates if the notary is validating.
  */
+@KeepForDJVM
 @CordaSerializable
 data class NotaryInfo(val identity: Party, val validating: Boolean)
+
+/**
+ * When a Corda feature cannot be used due to the node's compatibility zone not enforcing a high enough minimum platform
+ * version.
+ */
+class ZoneVersionTooLowException(message: String) : CordaRuntimeException(message)

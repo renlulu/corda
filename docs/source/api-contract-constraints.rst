@@ -51,6 +51,8 @@ upgrade approach is that you can upgrade states regardless of their constraint, 
 anticipate a need to do so. But it requires everyone to sign, requires everyone to manually authorise the upgrade,
 consumes notary and ledger resources, and is just in general more complex.
 
+.. _implicit_constraint_types:
+
 How constraints work
 --------------------
 
@@ -81,7 +83,7 @@ command to accept the new parameters file and then restarting the node. Node own
 time effectively stop being a part of the network.
 
 **Signature constraints.** These are not yet supported, but once implemented they will allow a state to require a JAR
-signed by a specified identity, via the regular Java jarsigner tool. This will be the most flexible type
+signed by a specified identity, via the regular Java ``jarsigner`` tool. This will be the most flexible type
 and the smoothest to deploy: no restarts or contract upgrade transactions are needed.
 
 **Defaults.** The default constraint type is either a zone constraint, if the network parameters in effect when the
@@ -135,18 +137,18 @@ constraint placeholder is useful.
 FinalityFlow
 ------------
 
-It's possible to encounter contract contraint issues when notarising transactions with the ``FinalityFlow`` on a network
-containing multiple versions of the same CorDapp. This will happen when using hash contraints or with zone contraints
+It's possible to encounter contract constraint issues when notarising transactions with the ``FinalityFlow`` on a network
+containing multiple versions of the same CorDapp. This will happen when using hash constraints or with zone constraints
 if the zone whitelist has missing CorDapp versions. If a participating party fails to validate the **notarised** transaction
-then we have a scenerio where the members of the network do not have a consistent view of the ledger.
+then we have a scenario where the members of the network do not have a consistent view of the ledger.
 
-Therfore, if the finality handler flow (which is run on the counterparty) errors for any reason it will always be sent to
+Therefore, if the finality handler flow (which is run on the counter-party) errors for any reason it will always be sent to
 the flow hospital. From there it's suspended waiting to be retried on node restart. This gives the node operator the opportunity
-to recover from those errors, which in the case of contract constraint voilations means either updating the CorDapp or
+to recover from those errors, which in the case of contract constraint violations means either updating the CorDapp or
 adding its hash to the zone whitelist.
 
 .. note:: This is a temporary issue in the current version of Corda, until we implement some missing features which will
-   enable a seemless handling of differences in CorDapp versions.
+   enable a seamless handling of differences in CorDapp versions.
 
 CorDapps as attachments
 -----------------------

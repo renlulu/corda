@@ -1,26 +1,14 @@
 @file:JvmName("InternalUtils")
-
+@file:KeepForDJVM
 package net.corda.core.internal
 
-import com.google.common.hash.Hashing
-import com.google.common.hash.HashingInputStream
-import net.corda.core.cordapp.Cordapp
-import net.corda.core.cordapp.CordappConfig
-import net.corda.core.cordapp.CordappContext
+import net.corda.core.DeleteForDJVM
+import net.corda.core.KeepForDJVM
 import net.corda.core.crypto.*
-import net.corda.core.identity.CordaX500Name
-import net.corda.core.node.ServicesForResolution
 import net.corda.core.serialization.*
-import net.corda.core.transactions.SignedTransaction
-import net.corda.core.transactions.TransactionBuilder
-import net.corda.core.transactions.WireTransaction
 import net.corda.core.utilities.OpaqueBytes
 import net.corda.core.utilities.UntrustworthyData
-import org.bouncycastle.asn1.x500.X500Name
-import org.bouncycastle.asn1.x500.X500NameBuilder
-import org.bouncycastle.asn1.x500.style.BCStyle
 import org.slf4j.Logger
-import org.slf4j.MDC
 import rx.Observable
 import rx.Observer
 import rx.subjects.PublishSubject
@@ -43,6 +31,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.security.KeyPair
+import java.security.MessageDigest
 import java.security.PrivateKey
 import java.security.PublicKey
 import java.security.cert.*
@@ -108,6 +97,7 @@ fun <T> List<T>.noneOrSingle(): T? {
 }
 
 /** Returns a random element in the list, or `null` if empty */
+@DeleteForDJVM
 fun <T> List<T>.randomOrNull(): T? {
     return when (size) {
         0 -> null
@@ -123,7 +113,7 @@ fun <T> List<T>.indexOfOrThrow(item: T): Int {
     return i
 }
 
-fun InputStream.copyTo(target: Path, vararg options: CopyOption): Long = Files.copy(this, target, *options)
+@DeleteForDJVM fun InputStream.copyTo(target: Path, vararg options: CopyOption): Long = Files.copy(this, target, *options)
 
 /** Same as [InputStream.readBytes] but also closes the stream. */
 fun InputStream.readFully(): ByteArray = use { it.readBytes() }
@@ -131,9 +121,16 @@ fun InputStream.readFully(): ByteArray = use { it.readBytes() }
 /** Calculate the hash of the remaining bytes in this input stream. The stream is closed at the end. */
 fun InputStream.hash(): SecureHash {
     return use {
-        val his = HashingInputStream(Hashing.sha256(), it)
-        his.copyTo(NullOutputStream)  // To avoid reading in the entire stream into memory just write out the bytes to /dev/null
-        SecureHash.SHA256(his.hash().asBytes())
+        val md = MessageDigest.getInstance("SHA-256")
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        while (true) {
+            val count = it.read(buffer)
+            if (count == -1) {
+                break
+            }
+            md.update(buffer, 0, count)
+        }
+        SecureHash.SHA256(md.digest())
     }
 }
 
@@ -154,6 +151,7 @@ fun Iterable<BigDecimal>.sum(): BigDecimal = fold(BigDecimal.ZERO) { a, b -> a +
  * Returns an Observable that buffers events until subscribed.
  * @see UnicastSubject
  */
+@DeleteForDJVM
 fun <T> Observable<T>.bufferUntilSubscribed(): Observable<T> {
     val subject = UnicastSubject.create<T>()
     val subscription = subscribe(subject)
@@ -161,6 +159,7 @@ fun <T> Observable<T>.bufferUntilSubscribed(): Observable<T> {
 }
 
 /** Copy an [Observer] to multiple other [Observer]s. */
+@DeleteForDJVM
 fun <T> Observer<T>.tee(vararg teeTo: Observer<T>): Observer<T> {
     val subject = PublishSubject.create<T>()
     subject.subscribe(this)
@@ -169,6 +168,7 @@ fun <T> Observer<T>.tee(vararg teeTo: Observer<T>): Observer<T> {
 }
 
 /** Executes the given code block and returns a [Duration] of how long it took to execute in nanosecond precision. */
+@DeleteForDJVM
 inline fun elapsedTime(block: () -> Unit): Duration {
     val start = System.nanoTime()
     block()
@@ -181,6 +181,7 @@ fun <T> Logger.logElapsedTime(label: String, body: () -> T): T = logElapsedTime(
 
 // TODO: Add inline back when a new Kotlin version is released and check if the java.lang.VerifyError
 // returns in the IRSSimulationTest. If not, commit the inline back.
+@DeleteForDJVM
 fun <T> logElapsedTime(label: String, logger: Logger? = null, body: () -> T): T {
     // Use nanoTime as it's monotonic.
     val now = System.nanoTime()
@@ -208,6 +209,7 @@ fun ByteArrayOutputStream.toInputStreamAndHash(): InputStreamAndHash {
     return InputStreamAndHash(bytes.inputStream(), bytes.sha256())
 }
 
+@KeepForDJVM
 data class InputStreamAndHash(val inputStream: InputStream, val sha256: SecureHash.SHA256) {
     companion object {
         /**
@@ -215,6 +217,7 @@ data class InputStreamAndHash(val inputStream: InputStream, val sha256: SecureHa
          * called "z" that contains the given content byte repeated the given number of times.
          * Note that a slightly bigger than numOfExpectedBytes size is expected.
          */
+        @DeleteForDJVM
         fun createInMemoryTestZip(numOfExpectedBytes: Int, content: Byte): InputStreamAndHash {
             require(numOfExpectedBytes > 0)
             val baos = ByteArrayOutputStream()
@@ -268,24 +271,29 @@ inline fun <T, R : Any> Stream<T>.mapNotNull(crossinline transform: (T) -> R?): 
 fun <T> Class<T>.castIfPossible(obj: Any): T? = if (isInstance(obj)) cast(obj) else null
 
 /** Returns a [DeclaredField] wrapper around the declared (possibly non-public) static field of the receiver [Class]. */
+@DeleteForDJVM
 fun <T> Class<*>.staticField(name: String): DeclaredField<T> = DeclaredField(this, name, null)
 
 /** Returns a [DeclaredField] wrapper around the declared (possibly non-public) static field of the receiver [KClass]. */
+@DeleteForDJVM
 fun <T> KClass<*>.staticField(name: String): DeclaredField<T> = DeclaredField(java, name, null)
 
 /** Returns a [DeclaredField] wrapper around the declared (possibly non-public) instance field of the receiver object. */
+@DeleteForDJVM
 fun <T> Any.declaredField(name: String): DeclaredField<T> = DeclaredField(javaClass, name, this)
 
 /**
  * Returns a [DeclaredField] wrapper around the (possibly non-public) instance field of the receiver object, but declared
  * in its superclass [clazz].
  */
+@DeleteForDJVM
 fun <T> Any.declaredField(clazz: KClass<*>, name: String): DeclaredField<T> = DeclaredField(clazz.java, name, this)
 
 /**
  * Returns a [DeclaredField] wrapper around the (possibly non-public) instance field of the receiver object, but declared
  * in its superclass [clazz].
  */
+@DeleteForDJVM
 fun <T> Any.declaredField(clazz: Class<*>, name: String): DeclaredField<T> = DeclaredField(clazz, name, this)
 
 /** creates a new instance if not a Kotlin object */
@@ -314,6 +322,7 @@ val <T : Any> Class<T>.kotlinObjectInstance: T? get() {
  * A simple wrapper around a [Field] object providing type safe read and write access using [value], ignoring the field's
  * visibility.
  */
+@DeleteForDJVM
 class DeclaredField<T>(clazz: Class<*>, name: String, private val receiver: Any?) {
     private val javaField = findField(name, clazz)
     var value: T
@@ -369,13 +378,8 @@ fun <T, U : T> uncheckedCast(obj: T) = obj as U
 
 fun <K, V> Iterable<Pair<K, V>>.toMultiMap(): Map<K, List<V>> = this.groupBy({ it.first }) { it.second }
 
-/** Provide access to internal method for AttachmentClassLoaderTests */
-fun TransactionBuilder.toWireTransaction(services: ServicesForResolution, serializationContext: SerializationContext): WireTransaction {
-    return toWireTransactionWithContext(services, serializationContext)
-}
-
-/** Provide access to internal method for AttachmentClassLoaderTests */
-fun TransactionBuilder.toLedgerTransaction(services: ServicesForResolution, serializationContext: SerializationContext) = toLedgerTransactionWithContext(services, serializationContext)
+/** Returns the location of this class. */
+val Class<*>.location: URL get() = protectionDomain.codeSource.location
 
 /** Convenience method to get the package name of a class literal. */
 val KClass<*>.packageName: String get() = java.packageName
@@ -391,12 +395,14 @@ inline val Member.isStatic: Boolean get() = Modifier.isStatic(modifiers)
 
 inline val Member.isFinal: Boolean get() = Modifier.isFinal(modifiers)
 
-fun URI.toPath(): Path = Paths.get(this)
+@DeleteForDJVM fun URI.toPath(): Path = Paths.get(this)
 
-fun URL.toPath(): Path = toURI().toPath()
+@DeleteForDJVM fun URL.toPath(): Path = toURI().toPath()
 
+@DeleteForDJVM
 fun URL.openHttpConnection(): HttpURLConnection = openConnection() as HttpURLConnection
 
+@DeleteForDJVM
 fun URL.post(serializedData: OpaqueBytes, vararg properties: Pair<String, String>): ByteArray {
     return openHttpConnection().run {
         doOutput = true
@@ -409,20 +415,24 @@ fun URL.post(serializedData: OpaqueBytes, vararg properties: Pair<String, String
     }
 }
 
+@DeleteForDJVM
 fun HttpURLConnection.checkOkResponse() {
     if (responseCode != HTTP_OK) {
         throw IOException("Response Code $responseCode: $errorMessage")
     }
 }
 
+@DeleteForDJVM
 val HttpURLConnection.errorMessage: String? get() = errorStream?.let { it.use { it.reader().readText() } }
 
+@DeleteForDJVM
 inline fun <reified T : Any> HttpURLConnection.responseAs(): T {
     checkOkResponse()
     return inputStream.readObject()
 }
 
 /** Analogous to [Thread.join]. */
+@DeleteForDJVM
 fun ExecutorService.join() {
     shutdown() // Do not change to shutdownNow, tests use this method to assert the executor has no more tasks.
     while (!awaitTermination(1, TimeUnit.SECONDS)) {
@@ -447,32 +457,13 @@ $trustAnchor""", e, this, e.index)
     }
 }
 
-/**
- * Return the underlying X.500 name from this Corda-safe X.500 name. These are guaranteed to have a consistent
- * ordering, such that their `toString()` function returns the same value every time for the same [CordaX500Name].
- */
-val CordaX500Name.x500Name: X500Name
-    get() {
-        return X500NameBuilder(BCStyle.INSTANCE).apply {
-            addRDN(BCStyle.C, country)
-            state?.let { addRDN(BCStyle.ST, it) }
-            addRDN(BCStyle.L, locality)
-            addRDN(BCStyle.O, organisation)
-            organisationUnit?.let { addRDN(BCStyle.OU, it) }
-            commonName?.let { addRDN(BCStyle.CN, it) }
-        }.build()
-    }
-
-@Suppress("unused")
-@VisibleForTesting
-val CordaX500Name.Companion.unspecifiedCountry
-    get() = "ZZ"
-
+@DeleteForDJVM
 inline fun <T : Any> T.signWithCert(signer: (SerializedBytes<T>) -> DigitalSignatureWithCert): SignedDataWithCert<T> {
     val serialised = serialize()
     return SignedDataWithCert(serialised, signer(serialised))
 }
 
+@DeleteForDJVM
 fun <T : Any> T.signWithCert(privateKey: PrivateKey, certificate: X509Certificate): SignedDataWithCert<T> {
     return signWithCert {
         val signature = Crypto.doSign(privateKey, it.bytes)
@@ -480,17 +471,15 @@ fun <T : Any> T.signWithCert(privateKey: PrivateKey, certificate: X509Certificat
     }
 }
 
+@DeleteForDJVM
 inline fun <T : Any> SerializedBytes<T>.sign(signer: (SerializedBytes<T>) -> DigitalSignature.WithKey): SignedData<T> {
     return SignedData(this, signer(this))
 }
 
+@DeleteForDJVM
 fun <T : Any> SerializedBytes<T>.sign(keyPair: KeyPair): SignedData<T> = SignedData(this, keyPair.sign(this.bytes))
 
 fun ByteBuffer.copyBytes(): ByteArray = ByteArray(remaining()).also { get(it) }
-
-fun createCordappContext(cordapp: Cordapp, attachmentId: SecureHash?, classLoader: ClassLoader, config: CordappConfig): CordappContext {
-    return CordappContext(cordapp, attachmentId, classLoader, config)
-}
 
 val PublicKey.hash: SecureHash get() = encoded.sha256()
 
@@ -498,13 +487,6 @@ val PublicKey.hash: SecureHash get() = encoded.sha256()
  * Extension method for providing a sumBy method that processes and returns a Long
  */
 fun <T> Iterable<T>.sumByLong(selector: (T) -> Long): Long = this.map { selector(it) }.sum()
-
-/**
- * Ensures each log entry from the current thread will contain id of the transaction in the MDC.
- */
-internal fun SignedTransaction.pushToLoggingContext() {
-    MDC.put("tx_id", id.toString())
-}
 
 fun <T : Any> SerializedBytes<Any>.checkPayloadIs(type: Class<T>): UntrustworthyData<T> {
     val payloadData: T = try {

@@ -102,16 +102,10 @@ class StaffedFlowHospital {
     private data class ConsultationReport(val error: Throwable, val diagnosis: Diagnosis, val by: List<Staff>)
 
     /**
-     * The flow running in [flowFiber] has cleaned, possibly as a result of a flow hospital resume.
-     */
-    // It's okay for flows to be cleaned... we fix them now!
-    fun flowCleaned(flowFiber: FlowFiber) = Unit
-
-    /**
      * The flow has been removed from the state machine.
      */
-    fun flowRemoved(flowFiber: FlowFiber) {
-        mutex.locked { patients.remove(flowFiber.id) }
+    fun flowRemoved(flowId: StateMachineRunId) {
+        mutex.locked { patients.remove(flowId) }
     }
 
     // TODO MedicalRecord subtypes can expose the Staff class, something which we probably don't want when wiring this method to RPC
@@ -204,23 +198,17 @@ class StaffedFlowHospital {
     object DoctorTimeout : Staff {
         override fun consult(flowFiber: FlowFiber, currentState: StateMachineState, newError: Throwable, history: MedicalHistory): Diagnosis {
             if (newError is FlowTimeoutException) {
-                if (isTimedFlow(flowFiber)) {
-                    if (history.notDischargedForTheSameThingMoreThan(newError.maxRetries, this)) {
-                        return Diagnosis.DISCHARGE
-                    } else {
-                        log.warn("\"Maximum number of retries reached for timed flow ${flowFiber.javaClass}")
-                    }
+                if (history.notDischargedForTheSameThingMoreThan(newError.maxRetries, this)) {
+                    return Diagnosis.DISCHARGE
                 } else {
-                    log.warn("\"Unable to restart flow: ${flowFiber.javaClass}, it is not timed and does not contain any timed sub-flows.")
+                    val errorMsg = "Maximum number of retries reached for flow ${flowFiber.snapshot().flowLogic.javaClass}. " +
+                            "If the flow involves notarising a transaction, it means that no response was received from the notary." +
+                            "This could be either due to the the notary being overloaded or unable to reach this node."
+                    newError.setMessage(errorMsg)
+                    log.warn(errorMsg)
                 }
             }
             return Diagnosis.NOT_MY_SPECIALTY
-        }
-
-        private fun isTimedFlow(flowFiber: FlowFiber): Boolean {
-            return flowFiber.snapshot().checkpoint.subFlowStack.any {
-                TimedFlow::class.java.isAssignableFrom(it.flowClass)
-            }
         }
     }
 
@@ -229,7 +217,11 @@ class StaffedFlowHospital {
      */
     object FinalityDoctor : Staff {
         override fun consult(flowFiber: FlowFiber, currentState: StateMachineState, newError: Throwable, history: MedicalHistory): Diagnosis {
-            return if (currentState.flowLogic is FinalityHandler) Diagnosis.OVERNIGHT_OBSERVATION else Diagnosis.NOT_MY_SPECIALTY
+            return (currentState.flowLogic as? FinalityHandler)?.let { logic -> Diagnosis.OVERNIGHT_OBSERVATION.also { warn(logic, flowFiber, currentState) } } ?: Diagnosis.NOT_MY_SPECIALTY
+        }
+
+        private fun warn(flowLogic: FinalityHandler, flowFiber: FlowFiber, currentState: StateMachineState) {
+            log.warn("Flow ${flowFiber.id} failed to be finalised. Manual intervention may be required before retrying the flow by re-starting the node. State machine state: $currentState, initiating party was: ${flowLogic.sender().name}")
         }
     }
 }

@@ -2,8 +2,11 @@ package net.corda.serialization.internal
 
 import com.github.benmanes.caffeine.cache.Cache
 import com.github.benmanes.caffeine.cache.Caffeine
+import net.corda.core.DeleteForDJVM
+import net.corda.core.KeepForDJVM
 import net.corda.core.contracts.Attachment
 import net.corda.core.crypto.SecureHash
+import net.corda.core.internal.buildNamed
 import net.corda.core.internal.copyBytes
 import net.corda.core.serialization.*
 import net.corda.core.utilities.ByteSequence
@@ -20,6 +23,7 @@ internal object NullEncodingWhitelist : EncodingWhitelist {
     override fun acceptEncoding(encoding: SerializationEncoding) = false
 }
 
+@KeepForDJVM
 data class SerializationContextImpl @JvmOverloads constructor(override val preferredSerializationVersion: SerializationMagic,
                                                               override val deserializationClassLoader: ClassLoader,
                                                               override val whitelist: ClassWhitelist,
@@ -27,7 +31,8 @@ data class SerializationContextImpl @JvmOverloads constructor(override val prefe
                                                               override val objectReferencesEnabled: Boolean,
                                                               override val useCase: SerializationContext.UseCase,
                                                               override val encoding: SerializationEncoding?,
-                                                              override val encodingWhitelist: EncodingWhitelist = NullEncodingWhitelist) : SerializationContext {
+                                                              override val encodingWhitelist: EncodingWhitelist = NullEncodingWhitelist,
+                                                              override val lenientCarpenterEnabled: Boolean = false) : SerializationContext {
     private val builder = AttachmentsClassLoaderBuilder(properties, deserializationClassLoader)
 
     /**
@@ -49,6 +54,8 @@ data class SerializationContextImpl @JvmOverloads constructor(override val prefe
         return copy(objectReferencesEnabled = false)
     }
 
+    override fun withLenientCarpenter(): SerializationContext = copy(lenientCarpenterEnabled = true)
+
     override fun withClassLoader(classLoader: ClassLoader): SerializationContext {
         return copy(deserializationClassLoader = classLoader)
     }
@@ -61,14 +68,16 @@ data class SerializationContextImpl @JvmOverloads constructor(override val prefe
 
     override fun withPreferredSerializationVersion(magic: SerializationMagic) = copy(preferredSerializationVersion = magic)
     override fun withEncoding(encoding: SerializationEncoding?) = copy(encoding = encoding)
+    override fun withEncodingWhitelist(encodingWhitelist: EncodingWhitelist) = copy(encodingWhitelist = encodingWhitelist)
 }
 
 /*
- * This class is internal rather than private so that node-api-deterministic
+ * This class is internal rather than private so that serialization-deterministic
  * can replace it with an alternative version.
  */
+@DeleteForDJVM
 internal class AttachmentsClassLoaderBuilder(private val properties: Map<Any, Any>, private val deserializationClassLoader: ClassLoader) {
-    private val cache: Cache<List<SecureHash>, AttachmentsClassLoader> = Caffeine.newBuilder().weakValues().maximumSize(1024).build()
+    private val cache: Cache<List<SecureHash>, AttachmentsClassLoader> = Caffeine.newBuilder().weakValues().maximumSize(1024).buildNamed("SerializationScheme_attachmentClassloader")
 
     fun build(attachmentHashes: List<SecureHash>): AttachmentsClassLoader? {
         val serializationContext = properties[serializationContextKey] as? SerializeAsTokenContext ?: return null // Some tests don't set one.
@@ -90,10 +99,12 @@ internal class AttachmentsClassLoaderBuilder(private val properties: Map<Any, An
     }
 }
 
+@KeepForDJVM
 open class SerializationFactoryImpl(
     // TODO: This is read-mostly. Probably a faster implementation to be found.
     private val schemes: MutableMap<Pair<CordaSerializationMagic, SerializationContext.UseCase>, SerializationScheme>
 ) : SerializationFactory() {
+    @DeleteForDJVM
     constructor() : this(ConcurrentHashMap())
 
     companion object {
@@ -155,6 +166,7 @@ open class SerializationFactoryImpl(
 }
 
 
+@KeepForDJVM
 interface SerializationScheme {
     fun canDeserializeVersion(magic: CordaSerializationMagic, target: SerializationContext.UseCase): Boolean
     @Throws(NotSerializableException::class)

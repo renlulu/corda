@@ -28,7 +28,7 @@ see changes to this list.
 * Arnaud Stevens (Natixis)
 * Arun Battu (BNY Mellon)
 * Austin Moothart (R3)
-* balajimore
+* Balaji Bhanudas More (Synechron)
 * Barry Childe (HSBC)
 * Barry Flower (Westpac)
 * Bart van den Bosch (KBC)
@@ -40,6 +40,7 @@ see changes to this list.
 * BMO
 * Bob Crozier (AIA)
 * Bogdan Paunescu (R3)
+* Bruno dos Santos Carvalhal (Ordina Nederland)
 * C-Otto
 * Cais Manai (R3)
 * Carl Worrall (BCS)
@@ -58,15 +59,21 @@ see changes to this list.
 * Clay Ratliff (Thoughtworks)
 * Clemens Wan (R3)
 * Clinton Alexander (R3)
+* Clyde D'Cruz (Persistent Systems Limited)
 * cncorda
 * Credit Suisse
 * cyrsis
+* Dan Newton (Accenture)
 * Daniel Roig (SEB)
 * Dave Hudson (R3)
 * David John Grundy (Dankse Bank)
 * David Lee (BCS)
+* Dinesh Rivankar (Persistent Systems Limited)
 * Dirk Hermans (KBC)
+* dmytrobr
 * Edward Greenwood (State Street)
+* Elendu Uche (APPZONE)
+* Emanuel Russo (NTT DATA Italy)
 * Farzad Pezeshkpour (RBS)
 * fracting
 * Frederic Dalibard (Natixis)
@@ -77,6 +84,7 @@ see changes to this list.
 * Giulio Katis (Westpac)
 * Giuseppe Cardone (Intesa Sanpaolo)
 * Guy Hochstetler (R3)
+* Hristo Gatsinski (Industria)
 * Ian Cusden (UBS)
 * Ian Grigg (R3)
 * Igor Nitto (R3)
@@ -84,6 +92,7 @@ see changes to this list.
 * Ivan Schasny (R3)
 * James Brown (R3)
 * James Carlyle (R3)
+* Janis Olekss (Accenture)
 * Jared Harwayne-Gidansky (BNY Mellon)
 * Jayavaradhan Sambedu (Société Générale)
 * Joel Dudley (R3)
@@ -91,6 +100,7 @@ see changes to this list.
 * Johann Palychata (BNP Paribas)
 * johnnyychiu
 * Jonathan Sartin (R3)
+* Jonathan Sphar (R3)
 * Jose Coll (R3)
 * Jose Luu (Natixis)
 * Josh Lindl (BCS)
@@ -100,6 +110,7 @@ see changes to this list.
 * karnauskas
 * Kasia Streich (R3)
 * Kat Baker (R3)
+* Keerthi Nelaturu (Scotiabank)
 * Khaild Ahmed (Northern Trust)
 * Klaus Apolinario (Bradesco)
 * Koen Vingerhoets (KBC)
@@ -107,7 +118,7 @@ see changes to this list.
 * Lars Stage Thomsen (Danske Bank)
 * Lee Braine (Barclays)
 * Lucas Salmen (Itau)
-* Lulu Ren (S-Labs)
+* Lulu Ren (Monad-Labs)
 * Maksymilian Pawlak (R3)
 * Marek Scocovsky (ABSA)
 * marekdapps
@@ -119,6 +130,7 @@ see changes to this list.
 * Massimo Morini
 * Mat Rizzo (R3)
 * Matt Britton (BCS)
+* Matthew Layton (TradeIX)
 * Matthew Nesbit (R3)
 * Matthijs van den Bos (ING)
 * Michal Kit (R3)
@@ -127,6 +139,7 @@ see changes to this list.
 * Mike Hearn (R3)
 * Mike Ward (R3)
 * Mike Reichelt (US Bank)
+* Milen Dobrinov (Industria)
 * Mohamed Amine LEGHERABA
 * Mustafa Ozturk (Natixis)
 * Nick Skinner (Northern Trust)
@@ -135,6 +148,7 @@ see changes to this list.
 * Nuam Athaweth (MUFG)
 * Oscar Zibordi de Paiva (Scopus Soluções em TI)
 * OP Financial
+* Parnika Sharma (BCS Technology)
 * Patrick Kuo (R3)
 * Pekka Kaipio (OP Financial)
 * Phillip Griffin
@@ -147,6 +161,7 @@ see changes to this list.
 * Richard Crook (RBS)
 * Richard Gendal Brown (R3)
 * Richard Green (R3)
+* Richard Green (Blocksure)
 * Rick Parker (R3)
 * Roberto Karpinski (Bradesco)
 * Robin Green (CIBC)
@@ -163,7 +178,9 @@ see changes to this list.
 * Sam Chadwick (Thomson Reuters)
 * Sasmit Sahu
 * Scott James
+* Sean Zhang (Wells Fargo)
 * Shams Asari (R3)
+* Shivan Sawant (Persistent Systems Limited)
 * Siddhartha Sengupta (Tradewind Markets)
 * Simon Taylor (Barclays)
 * Sofus Mortensen (Digital Asset Holdings)
@@ -182,7 +199,7 @@ see changes to this list.
 * Tommy Lillehagen (R3)
 * tomtau
 * Tudor Malene (R3)
-* Tushar Singh Bora
+* Tushar Singh Bora (Accenture)
 * varunkm
 * Venelin Stoykov (INDUSTRIA)
 * verymahler

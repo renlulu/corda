@@ -16,9 +16,10 @@ handling, and ensures the Corda service is run at boot.
 
    * Oracle Java 8. The supported versions are listed in :doc:`getting-set-up`
 
-1. Add a system user which will be used to run Corda:
+1. As root/sys admin user - add a system user which will be used to run Corda:
 
     ``sudo adduser --system --no-create-home --group corda``
+
 
 2. Create a directory called ``/opt/corda`` and change its ownership to the user you want to use to run Corda:
 
@@ -38,7 +39,6 @@ handling, and ensures the Corda service is run at boot.
       basedir : "/opt/corda"
       p2pAddress : "example.com:10002"
       rpcAddress : "example.com:10003"
-      webAddress : "0.0.0.0:10004"
       h2port : 11000
       emailAddress : "you@example.com"
       myLegalName : "O=Bank of Breakfast Tea, L=London, C=GB"
@@ -203,7 +203,6 @@ at boot, and means the Corda service stays running with no users connected to th
         basedir : "C:\\Corda"
         p2pAddress : "example.com:10002"
         rpcAddress : "example.com:10003"
-        webAddress : "0.0.0.0:10004"
         h2port : 11000
         emailAddress: "you@example.com"
         myLegalName : "O=Bank of Breakfast Tea, L=London, C=GB"

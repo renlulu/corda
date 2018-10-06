@@ -4,9 +4,8 @@ import net.corda.core.contracts.StateRef
 import net.corda.core.contracts.UpgradedContract
 import net.corda.core.node.services.ContractUpgradeService
 import net.corda.core.serialization.SingletonSerializeAsToken
-import net.corda.nodeapi.internal.persistence.NODE_DATABASE_PREFIX
 import net.corda.node.utilities.PersistentMap
-import java.io.Serializable
+import net.corda.nodeapi.internal.persistence.NODE_DATABASE_PREFIX
 import javax.persistence.Column
 import javax.persistence.Entity
 import javax.persistence.Id
@@ -22,15 +21,16 @@ class ContractUpgradeServiceImpl : ContractUpgradeService, SingletonSerializeAsT
             var stateRef: String = "",
 
             /** refers to the UpgradedContract class name*/
-            @Column(name = "contract_class_name", nullable = false)
-            var upgradedContractClassName: String = ""
-    ) : Serializable
+            @Column(name = "contract_class_name", nullable = true)
+            var upgradedContractClassName: String? = ""
+    )
 
     private companion object {
         fun createContractUpgradesMap(): PersistentMap<String, String, DBContractUpgrade, String> {
             return PersistentMap(
+                    "ContractUpgradeService_upgrades",
                     toPersistentEntityKey = { it },
-                    fromPersistentEntity = { Pair(it.stateRef, it.upgradedContractClassName) },
+                    fromPersistentEntity = { Pair(it.stateRef, it.upgradedContractClassName ?: "") },
                     toPersistentEntity = { key: String, value: String ->
                         DBContractUpgrade().apply {
                             stateRef = key
@@ -43,6 +43,10 @@ class ContractUpgradeServiceImpl : ContractUpgradeService, SingletonSerializeAsT
     }
 
     private val authorisedUpgrade = createContractUpgradesMap()
+
+    fun start() {
+        authorisedUpgrade.preload()
+    }
 
     override fun getAuthorisedContractUpgrade(ref: StateRef) = authorisedUpgrade[ref.toString()]
 

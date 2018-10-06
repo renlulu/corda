@@ -9,11 +9,11 @@ import net.corda.core.internal.readObject
 import net.corda.core.serialization.deserialize
 import net.corda.core.utilities.days
 import net.corda.core.utilities.seconds
+import net.corda.node.VersionInfo
 import net.corda.node.internal.NetworkParametersReader
 import net.corda.nodeapi.internal.network.*
 import net.corda.testing.common.internal.testNetworkParameters
 import net.corda.testing.core.SerializationEnvironmentRule
-import net.corda.testing.driver.PortAllocation
 import net.corda.testing.internal.DEV_ROOT_CA
 import net.corda.testing.node.internal.network.NetworkMapServer
 import org.assertj.core.api.Assertions.assertThat
@@ -32,7 +32,7 @@ class NetworkParametersReaderTest {
     @JvmField
     val testSerialization = SerializationEnvironmentRule(true)
 
-    val fs: FileSystem = Jimfs.newFileSystem(Configuration.unix())
+    private val fs: FileSystem = Jimfs.newFileSystem(Configuration.unix())
     private val cacheTimeout = 100000.seconds
 
     private lateinit var server: NetworkMapServer
@@ -40,9 +40,10 @@ class NetworkParametersReaderTest {
 
     @Before
     fun setUp() {
-        server = NetworkMapServer(cacheTimeout, PortAllocation.Incremental(10000).nextHostAndPort())
-        val hostAndPort = server.start()
-        networkMapClient = NetworkMapClient(URL("http://${hostAndPort.host}:${hostAndPort.port}"), DEV_ROOT_CA.certificate)
+        server = NetworkMapServer(cacheTimeout)
+        val address = server.start()
+        networkMapClient = NetworkMapClient(URL("http://$address"), VersionInfo(1, "TEST", "TEST", "TEST"))
+        networkMapClient.start(DEV_ROOT_CA.certificate)
     }
 
     @After
@@ -57,7 +58,7 @@ class NetworkParametersReaderTest {
         val oldParameters = testNetworkParameters(epoch = 1)
         NetworkParametersCopier(oldParameters).install(baseDirectory)
         NetworkParametersCopier(server.networkParameters, update = true).install(baseDirectory) // Parameters update file.
-        val parameters = NetworkParametersReader(DEV_ROOT_CA.certificate, networkMapClient, baseDirectory).networkParameters
+        val parameters = NetworkParametersReader(DEV_ROOT_CA.certificate, networkMapClient, baseDirectory).read().networkParameters
         assertFalse((baseDirectory / NETWORK_PARAMS_UPDATE_FILE_NAME).exists())
         assertEquals(server.networkParameters, parameters)
         // Parameters from update should be moved to `network-parameters` file.
@@ -73,7 +74,7 @@ class NetworkParametersReaderTest {
         val baseDirectory = fs.getPath("/node").createDirectories()
         val fileParameters = testNetworkParameters(epoch = 1)
         NetworkParametersCopier(fileParameters).install(baseDirectory)
-        val parameters = NetworkParametersReader(DEV_ROOT_CA.certificate, networkMapClient, baseDirectory).networkParameters
+        val parameters = NetworkParametersReader(DEV_ROOT_CA.certificate, networkMapClient, baseDirectory).read().networkParameters
         assertThat(parameters).isEqualTo(fileParameters)
     }
 

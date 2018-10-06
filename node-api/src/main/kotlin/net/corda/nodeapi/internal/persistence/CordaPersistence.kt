@@ -22,7 +22,6 @@ const val NODE_DATABASE_PREFIX = "node_"
 // This class forms part of the node config and so any changes to it must be handled with care
 data class DatabaseConfig(
         val initialiseSchema: Boolean = true,
-        val serverNameTablePrefix: String = "",
         val transactionIsolationLevel: TransactionIsolationLevel = TransactionIsolationLevel.REPEATABLE_READ,
         val exportHibernateJMXStatistics: Boolean = false,
         val mappedSchemaCacheSize: Long = 100
@@ -39,7 +38,8 @@ enum class TransactionIsolationLevel {
     /**
      * The JDBC constant value of the same name but prefixed with TRANSACTION_ defined in [java.sql.Connection].
      */
-    val jdbcValue: Int = java.sql.Connection::class.java.getField("TRANSACTION_$name").get(null) as Int
+    val jdbcString = "TRANSACTION_$name"
+    val jdbcValue: Int = java.sql.Connection::class.java.getField(jdbcString).get(null) as Int
 }
 
 private val _contextDatabase = InheritableThreadLocal<CordaPersistence>()
@@ -49,9 +49,9 @@ var contextDatabase: CordaPersistence
 val contextDatabaseOrNull: CordaPersistence? get() = _contextDatabase.get()
 
 class CordaPersistence(
-        val dataSource: DataSource,
         databaseConfig: DatabaseConfig,
         schemas: Set<MappedSchema>,
+        val jdbcUrl: String,
         attributeConverters: Collection<AttributeConverter<*, *>> = emptySet()
 ) : Closeable {
     companion object {
@@ -61,14 +61,19 @@ class CordaPersistence(
     private val defaultIsolationLevel = databaseConfig.transactionIsolationLevel
     val hibernateConfig: HibernateConfiguration by lazy {
         transaction {
-            HibernateConfiguration(schemas, databaseConfig, attributeConverters)
+            HibernateConfiguration(schemas, databaseConfig, attributeConverters, jdbcUrl)
         }
     }
+
     val entityManagerFactory get() = hibernateConfig.sessionFactoryForRegisteredSchemas
 
     data class Boundary(val txId: UUID, val success: Boolean)
 
-    init {
+    private var _dataSource: DataSource? = null
+    val dataSource: DataSource get() = checkNotNull(_dataSource) { "CordaPersistence not started" }
+
+    fun start(dataSource: DataSource) {
+        _dataSource = dataSource
         // Found a unit test that was forgetting to close the database transactions.  When you close() on the top level
         // database transaction it will reset the threadLocalTx back to null, so if it isn't then there is still a
         // database transaction open.  The [transaction] helper above handles this in a finally clause for you
@@ -171,7 +176,7 @@ class CordaPersistence(
 
     override fun close() {
         // DataSource doesn't implement AutoCloseable so we just have to hope that the implementation does so that we can close it
-        (dataSource as? AutoCloseable)?.close()
+        (_dataSource as? AutoCloseable)?.close()
     }
 }
 

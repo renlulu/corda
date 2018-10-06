@@ -5,7 +5,6 @@ buildscript {
 
     // Our version: bump this on release.
     ext.corda_release_version = "4.0-SNAPSHOT"
-    // Increment this on any release that changes public APIs anywhere in the Corda platform
     ext.corda_platform_version = constants.getProperty("platformVersion")
     ext.gradle_plugins_version = constants.getProperty("gradlePluginsVersion")
 
@@ -13,30 +12,16 @@ buildscript {
     //
     // TODO: Sort this alphabetically.
     ext.kotlin_version = constants.getProperty("kotlinVersion")
-    // use our fork of quasar
-    ext.quasar_group = 'com.github.corda.quasar'
-    ext.quasar_version = '7629695563deae6cc95adcfbebcbc8322fd0241a'
 
-    // gradle-capsule-plugin:1.0.2 contains capsule:1.0.1
-    // TODO: Upgrade gradle-capsule-plugin to a version with capsule:1.0.3
-    ext.capsule_version = '1.0.1'
+    ext.quasar_group = 'co.paralleluniverse'
+    ext.quasar_version = '0.7.10'
+
+    // gradle-capsule-plugin:1.0.2 contains capsule:1.0.1 by default.
+    // We must configure it manually to use the latest capsule version.
+    ext.capsule_version = '1.0.3'
 
     ext.asm_version = '5.0.4'
-
-    /*
-     * TODO Upgrade to version 2.4 for large message streaming support
-     *
-     * Due to a memory leak in the connection handling code in Artemis, we are
-     * temporarily downgrading to version 2.2.0.
-     *
-     * The memory leak essentially triggers an out-of-memory exception within
-     * less than 10 seconds and can take down a node if a non-TLS connection is
-     * attempted against the P2P port.
-     *
-     * The issue has been reported to upstream:
-     * https://issues.apache.org/jira/browse/ARTEMIS-1559
-     */
-    ext.artemis_version = '2.5.0'
+    ext.artemis_version = '2.6.2'
     ext.jackson_version = '2.9.5'
     ext.jetty_version = '9.4.7.v20170914'
     ext.jersey_version = '2.25'
@@ -46,20 +31,23 @@ buildscript {
     ext.bouncycastle_version = constants.getProperty("bouncycastleVersion")
     ext.guava_version = constants.getProperty("guavaVersion")
     ext.caffeine_version = constants.getProperty("caffeineVersion")
+    ext.disruptor_version = constants.getProperty("disruptorVersion")
     ext.metrics_version = constants.getProperty("metricsVersion")
+    ext.metrics_new_relic_version = constants.getProperty("metricsNewRelicVersion")
     ext.okhttp_version = '3.5.0'
     ext.netty_version = '4.1.22.Final'
     ext.typesafe_config_version = constants.getProperty("typesafeConfigVersion")
     ext.fileupload_version = '1.3.3'
     ext.junit_version = '4.12'
     ext.mockito_version = '2.18.3'
+    ext.hamkrest_version = '1.4.2.2'
     ext.jopt_simple_version = '5.0.2'
     ext.jansi_version = '1.14'
     ext.hibernate_version = '5.2.6.Final'
     ext.h2_version = '1.4.197' // Update docs if renamed or removed.
     ext.postgresql_version = '42.1.4'
-    ext.rxjava_version = '1.2.4'
-    ext.dokka_version = '0.9.16-eap-2'
+    ext.rxjava_version = '1.3.8'
+    ext.dokka_version = '0.9.17'
     ext.eddsa_version = '0.2.0'
     ext.dependency_checker_version = '3.1.0'
     ext.commons_collections_version = '4.1'
@@ -68,21 +56,29 @@ buildscript {
     ext.jsr305_version = constants.getProperty("jsr305Version")
     ext.shiro_version = '1.4.0'
     ext.artifactory_plugin_version = constants.getProperty('artifactoryPluginVersion')
+    ext.liquibase_version = '3.5.5'
     ext.artifactory_contextUrl = 'https://ci-artifactory.corda.r3cev.com/artifactory'
     ext.snake_yaml_version = constants.getProperty('snakeYamlVersion')
     ext.docker_compose_rule_version = '0.33.0'
     ext.selenium_version = '3.8.1'
     ext.ghostdriver_version = '2.1.0'
     ext.eaagentloader_version = '1.0.3'
+    ext.proguard_version = constants.getProperty('proguardVersion')
     ext.jsch_version = '0.1.54'
     ext.commons_cli_version = '1.4'
-    ext.protonj_version = '0.27.1'
+    ext.protonj_version = '0.27.1' // This is now aligned with the Artemis version, but retaining in case we ever need to diverge again for a bug fix.
     ext.snappy_version = '0.4'
     ext.fast_classpath_scanner_version = '2.12.3'
     ext.jcabi_manifests_version = '1.1'
+    ext.picocli_version = '3.5.2'
 
-    // Update 121 is required for ObjectInputFilter and at time of writing 131 was latest:
-    ext.java8_minUpdateVersion = '131'
+    // Name of the IntelliJ SDK created for the deterministic Java rt.jar.
+    // ext.deterministic_idea_sdk = '1.8 (Deterministic)'
+
+    // Update 121 is required for ObjectInputFilter.
+    // Updates [131, 161] also have zip compression bugs on MacOS (High Sierra).
+    // when the java version in NodeStartup.hasMinimumJavaVersion() changes, so must this check
+    ext.java8_minUpdateVersion = '171'
 
     repositories {
         mavenLocal()
@@ -105,10 +101,11 @@ buildscript {
         classpath "net.corda.plugins:cordformation:$gradle_plugins_version"
         classpath "net.corda.plugins:cordapp:$gradle_plugins_version"
         classpath "net.corda.plugins:api-scanner:$gradle_plugins_version"
+        classpath "net.corda.plugins:jar-filter:$gradle_plugins_version"
+        classpath "net.sf.proguard:proguard-gradle:$proguard_version"
         classpath 'com.github.ben-manes:gradle-versions-plugin:0.15.0'
         classpath "org.jetbrains.kotlin:kotlin-noarg:$kotlin_version"
         classpath "org.jetbrains.dokka:dokka-gradle-plugin:${dokka_version}"
-        classpath "org.ajoberstar:grgit:1.1.0"
         classpath "net.i2p.crypto:eddsa:$eddsa_version" // Needed for ServiceIdentityGenerator in the build environment.
         classpath "org.owasp:dependency-check-gradle:${dependency_checker_version}"
         classpath "org.jfrog.buildinfo:build-info-extractor-gradle:$artifactory_plugin_version"
@@ -118,12 +115,16 @@ buildscript {
 plugins {
     // TODO The capsule plugin requires the newer DSL plugin block.It would be nice if we could unify all the plugins into one style,
     // but the DSL has some restrictions e.g can't be used on the allprojects section. So we should revisit this if there are improvements in Gradle.
-    // Version 1.0.2 of this plugin uses capsule:1.0.1
-    id "us.kirchmeier.capsule" version "1.0.2"
+    // Version 1.0.2 of this plugin uses capsule:1.0.1 by default.
+    id 'us.kirchmeier.capsule' version '1.0.2' apply false
+
+    // Add the shadow plugin to the plugins classpath for the entire project.
+    id 'com.github.johnrengelman.shadow' version '2.0.4' apply false
+    id "com.gradle.build-scan" version "1.16"
 }
 
 ext {
-    corda_revision = org.ajoberstar.grgit.Grgit.open(file('.')).head().id
+    corda_revision = "git rev-parse HEAD".execute().text.trim()
 }
 
 apply plugin: 'project-report'
@@ -143,7 +144,6 @@ targetCompatibility = 1.8
 
 allprojects {
     apply plugin: 'kotlin'
-    apply plugin: 'java'
     apply plugin: 'jacoco'
     apply plugin: 'org.owasp.dependencycheck'
     apply plugin: 'kotlin-allopen'
@@ -166,6 +166,7 @@ allprojects {
 
     tasks.withType(JavaCompile) {
         options.compilerArgs << "-Xlint:unchecked" << "-Xlint:deprecation" << "-Xlint:-options" << "-parameters"
+        options.encoding = 'UTF-8'
     }
 
     tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).all {
@@ -174,7 +175,8 @@ allprojects {
             apiVersion = "1.2"
             jvmTarget = "1.8"
             javaParameters = true   // Useful for reflection.
-            freeCompilerArgs = ['-Xenable-jvm-default']
+            freeCompilerArgs = ['-Xjvm-default=compatibility']
+            allWarningsAsErrors = project.hasProperty('compilation.allWarningsAsErrors') ? project.property('compilation.allWarningsAsErrors').toBoolean() : false
         }
     }
 
@@ -190,15 +192,24 @@ allprojects {
     }
 
     tasks.withType(Test) {
+        failFast = project.hasProperty('tests.failFast') ? project.property('tests.failFast').toBoolean() : false
+
         // Prevent the project from creating temporary files outside of the build directory.
-        systemProperties['java.io.tmpdir'] = buildDir
+        systemProperty 'java.io.tmpdir', buildDir.absolutePath
 
         if (System.getProperty("test.maxParallelForks") != null) {
             maxParallelForks = Integer.valueOf(System.getProperty("test.maxParallelForks"))
+            logger.debug("System property test.maxParallelForks found - setting max parallel forks to $maxParallelForks for $project")
         }
 
         if (project.path.startsWith(':experimental') && System.getProperty("experimental.test.enable") == null) {
             enabled = false
+        }
+
+        // Required to use Gradle build cache (until Gradle 5.0 is released with default value of "append" set to false)
+        // See https://github.com/gradle/gradle/issues/5269 and https://github.com/gradle/gradle/pull/6419
+        extensions.configure(TypeOf.typeOf(JacocoTaskExtension)) { ex ->
+            ex.append = false
         }
     }
 
@@ -209,8 +220,8 @@ allprojects {
         mavenLocal()
         mavenCentral()
         jcenter()
+        maven { url "$artifactory_contextUrl/corda-dependencies" }
         maven { url 'https://jitpack.io' }
-        maven { url "$artifactory_contextUrl/corda-releases" } // cordform-common
     }
 
     configurations {
@@ -220,6 +231,9 @@ allprojects {
                 force "org.jetbrains.kotlin:kotlin-stdlib-jdk7:$kotlin_version"
                 force "org.jetbrains.kotlin:kotlin-stdlib-jdk8:$kotlin_version"
                 force "org.jetbrains.kotlin:kotlin-reflect:$kotlin_version"
+
+                // Force dependencies to use the same version of Guava as Corda.
+                force "com.google.guava:guava:$guava_version"
 
                 // Demand that everything uses our given version of Netty.
                 eachDependency { details ->
@@ -233,6 +247,8 @@ allprojects {
             // We want to use SLF4J's version of these bindings: jcl-over-slf4j
             // Remove any transitive dependency on Apache's version.
             exclude group: 'commons-logging', module: 'commons-logging'
+            // Remove any transitive dependency on Logback (e.g. Liquibase 3.6 introduces this dependency)
+            exclude group: 'ch.qos.logback'
 
             // Netty-All is an uber-jar which contains every Netty module.
             // Exclude it to force us to use the individual Netty modules instead.
@@ -252,11 +268,6 @@ allprojects {
 // minor releases, so we can't work with just any Java 8, it has to be a recent one.
 if (!JavaVersion.current().java8Compatible)
     throw new GradleException("Corda requires Java 8, please upgrade to at least 1.8.0_$java8_minUpdateVersion")
-
-repositories {
-    mavenCentral()
-    jcenter()
-}
 
 // Required for building out the fat JAR.
 dependencies {
@@ -324,7 +335,34 @@ bintrayConfig {
     projectUrl = 'https://github.com/corda/corda'
     gpgSign = true
     gpgPassphrase = System.getenv('CORDA_BINTRAY_GPG_PASSPHRASE')
-    publications = ['corda-jfx', 'corda-mock', 'corda-rpc', 'corda-core', 'corda', 'corda-finance', 'corda-node', 'corda-node-api', 'corda-test-common', 'corda-test-utils', 'corda-jackson', 'corda-verifier', 'corda-webserver-impl', 'corda-webserver', 'corda-node-driver', 'corda-confidential-identities', 'corda-shell', 'corda-serialization', 'tools-blob-inspector', 'tools-network-bootstrapper']
+    publications = [
+            'corda-jfx',
+            'corda-mock',
+            'corda-rpc',
+            'corda-core',
+            'corda-core-deterministic',
+            'corda-deterministic-verifier',
+            'corda-djvm',
+            'corda',
+            'corda-finance',
+            'corda-node',
+            'corda-node-api',
+            'corda-test-common',
+            'corda-test-utils',
+            'corda-jackson',
+            'corda-webserver-impl',
+            'corda-webserver',
+            'corda-node-driver',
+            'corda-confidential-identities',
+            'corda-shell',
+            'corda-tools-shell-cli',
+            'corda-serialization',
+            'corda-serialization-deterministic',
+            'corda-tools-blob-inspector',
+            'corda-tools-explorer',
+            'corda-tools-network-bootstrapper',
+            'corda-tools-cliutils'
+    ]
     license {
         name = 'Apache-2.0'
         url = 'https://www.apache.org/licenses/LICENSE-2.0'
@@ -355,26 +393,26 @@ artifactory {
         contextUrl = artifactory_contextUrl
         repository {
             repoKey = 'corda-dev'
-            username = 'teamcity'
+            username = System.getenv('CORDA_ARTIFACTORY_USERNAME')
             password = System.getenv('CORDA_ARTIFACTORY_PASSWORD')
         }
 
         defaults {
             // Root project applies the plugin (for this block) but does not need to be published
-            if(project != rootProject) {
+            if (project != rootProject) {
                 publications(project.extensions.publish.name())
             }
         }
     }
 }
 
-task generateApi(type: net.corda.plugins.GenerateApi){
+task generateApi(type: net.corda.plugins.GenerateApi) {
     baseName = "api-corda"
 }
 
 // This exists to reduce CI build time when the envvar is set (can save up to 40 minutes)
-if(file('corda-docs-only-build').exists() || (System.getenv('CORDA_DOCS_ONLY_BUILD') != null)) {
-    if(file('corda-docs-only-build').exists()) {
+if (file('corda-docs-only-build').exists() || (System.getenv('CORDA_DOCS_ONLY_BUILD') != null)) {
+    if (file('corda-docs-only-build').exists()) {
         logger.info("Tests are disabled due to presence of file 'corda-docs-only-build' in the project root")
     } else {
         logger.info("Tests are disabled due to the presence of envvar CORDA_DOCS_ONLY_BUILD")
@@ -386,7 +424,7 @@ if(file('corda-docs-only-build').exists() || (System.getenv('CORDA_DOCS_ONLY_BUI
         }
 
         it.afterEvaluate {
-            if(it.tasks.findByName("integrationTest") != null) {
+            if (it.tasks.findByName("integrationTest") != null) {
                 integrationTest {
                     exclude '*/**'
                 }
@@ -394,7 +432,7 @@ if(file('corda-docs-only-build').exists() || (System.getenv('CORDA_DOCS_ONLY_BUI
         }
 
         it.afterEvaluate {
-            if(it.tasks.findByName("smokeTest") != null) {
+            if (it.tasks.findByName("smokeTest") != null) {
                 smokeTest {
                     exclude '*/**'
                 }
@@ -404,6 +442,11 @@ if(file('corda-docs-only-build').exists() || (System.getenv('CORDA_DOCS_ONLY_BUI
 }
 
 wrapper {
-    gradleVersion = "4.4.1"
+    gradleVersion = "4.10.1"
     distributionType = Wrapper.DistributionType.ALL
+}
+
+buildScan {
+    termsOfServiceUrl = 'https://gradle.com/terms-of-service'
+    termsOfServiceAgree = 'yes'
 }
